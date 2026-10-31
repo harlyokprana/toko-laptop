@@ -84,3 +84,4 @@ php artisan db:seed --class='Database\Seeders\DemoAccountsSeeder'
 ```
 
 Seeder akun demo mempertahankan password dan data profil jika alamat email tersebut sudah ada; seeder hanya memastikan role-nya sesuai. Gunakan akun ini hanya untuk development.
+# toko-laptop
