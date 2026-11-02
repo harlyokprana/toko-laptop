@@ -94,8 +94,8 @@ class DashboardController extends Controller
         }
 
         if ($canSeeIncome && ! $canSeePurchases) {
-            $todayIncome = Pendapatan::query()->whereDate('tanggal', $date);
-            $previousIncome = Pendapatan::query()->whereDate('tanggal', $previousDate);
+            $todayIncome = Pendapatan::query()->forProfitLoss()->whereDate('tanggal', $date);
+            $previousIncome = Pendapatan::query()->forProfitLoss()->whereDate('tanggal', $previousDate);
             $metrics[] = $this->metric('Pendapatan Hari Ini', $this->money((clone $todayIncome)->sum('nominal')), number_format((clone $todayIncome)->count(), 0, ',', '.').' penerimaan', $this->comparison((float) (clone $todayIncome)->sum('nominal'), (float) (clone $previousIncome)->sum('nominal')), 'deposit', 'cyan');
         }
 

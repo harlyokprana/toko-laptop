@@ -11,6 +11,7 @@ use App\Models\Role;
 use App\Models\Supplier;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 class MasterDataTest extends TestCase
@@ -20,9 +21,15 @@ class MasterDataTest extends TestCase
     public function test_sales_role_can_create_search_and_update_customer_without_deleting_history(): void
     {
         $user = $this->userWithPermissions(['view_sales', 'create_sales', 'edit_sales']);
+        Role::firstOrCreate(['name' => 'PELANGGAN']);
+
+        $this->actingAs($user)->get(route('customers.create'))
+            ->assertOk()
+            ->assertSee('value="C-00001"', false)
+            ->assertSee('readonly', false);
 
         $this->actingAs($user)->post(route('customers.store'), [
-            'kode_pelanggan' => 'CUS-001',
+            'kode_pelanggan' => 'CUS-FORGED',
             'nama' => 'Budi Laptop',
             'email' => 'budi@example.com',
             'telepon' => '08123456789',
@@ -30,13 +37,20 @@ class MasterDataTest extends TestCase
             'status' => 'AKTIF',
         ])->assertRedirect();
 
-        $customer = Pelanggan::where('kode_pelanggan', 'CUS-001')->firstOrFail();
+        $customer = Pelanggan::where('nama', 'Budi Laptop')->firstOrFail();
+        $this->assertSame('C-00001', $customer->kode_pelanggan);
+        $account = $customer->user;
+        $this->assertNotNull($account);
+        $this->assertSame('08123456789', $account->phone);
+        $this->assertSame('PELANGGAN', $account->role->name);
+        $this->assertSame('AKTIF', $account->status);
+        $this->assertTrue(Hash::check('08123456789', $account->password));
 
         $this->actingAs($user)->get(route('customers.index', ['q' => '08123456789']))
             ->assertOk()->assertSee('Budi Laptop');
 
         $this->actingAs($user)->put(route('customers.update', $customer), [
-            'kode_pelanggan' => 'CUS-001',
+            'kode_pelanggan' => 'C-00001',
             'nama' => 'Budi Prime',
             'email' => 'budi@example.com',
             'telepon' => '08123456789',
@@ -46,14 +60,123 @@ class MasterDataTest extends TestCase
 
         $this->assertDatabaseHas('pelanggan', ['id' => $customer->id, 'nama' => 'Budi Prime', 'status' => 'NONAKTIF']);
         $this->actingAs($user)->delete(route('customers.update', $customer))->assertStatus(405);
+
+        $this->actingAs($user)->postJson(route('customers.quick-store'), [
+            'nama' => 'Sari Contoh',
+            'telepon' => '08123456780',
+        ])->assertOk()->assertJsonPath('kode_pelanggan', 'C-00002');
+
+        $this->assertDatabaseHas('users', ['phone' => '08123456780', 'status' => 'AKTIF']);
+
+        $this->post('/logout');
+        $this->post('/login', [
+            'email' => '08123456789',
+            'password' => '08123456789',
+        ])->assertRedirect(route('dashboard', absolute: false));
+        $this->assertAuthenticatedAs($account);
+    }
+
+    public function test_customer_phone_must_be_unique_and_duplicate_does_not_create_account(): void
+    {
+        Role::firstOrCreate(['name' => 'PELANGGAN']);
+        $user = $this->userWithPermissions(['create_sales']);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'OLD-001',
+            'nama' => 'Pelanggan Lama',
+            'telepon' => '08111111111',
+            'status' => 'AKTIF',
+        ]);
+        $account = User::factory()->create([
+            'name' => $customer->nama,
+            'phone' => $customer->telepon,
+            'role_id' => Role::where('name', 'PELANGGAN')->value('id'),
+        ]);
+        $customer->user()->associate($account)->save();
+
+        $this->actingAs($user)->post(route('customers.store'), [
+            'nama' => 'Nomor Duplikat',
+            'telepon' => '08111111111',
+            'status' => 'AKTIF',
+        ])->assertSessionHasErrors('telepon');
+
+        $this->assertDatabaseCount('users', 2);
+        $this->assertDatabaseCount('pelanggan', 1);
+    }
+
+    public function test_existing_customer_account_is_linked_without_changing_its_password(): void
+    {
+        $customerRole = Role::firstOrCreate(['name' => 'PELANGGAN']);
+        $user = $this->userWithPermissions(['create_sales']);
+        $existingAccount = User::factory()->create([
+            'name' => 'Akun Lama',
+            'phone' => '08191919191',
+            'role_id' => $customerRole->id,
+            'password' => 'existing-password',
+        ]);
+
+        $this->actingAs($user)->post(route('customers.store'), [
+            'nama' => 'Pelanggan Lama',
+            'telepon' => '08191919191',
+            'status' => 'AKTIF',
+        ])->assertRedirect();
+
+        $customer = Pelanggan::where('telepon', '08191919191')->firstOrFail();
+        $this->assertSame($existingAccount->id, $customer->user_id);
+        $this->assertTrue(Hash::check('existing-password', $existingAccount->fresh()->password));
+        $this->assertDatabaseCount('users', 2);
+    }
+
+    public function test_legacy_customer_without_account_gets_one_when_phone_is_added(): void
+    {
+        Role::firstOrCreate(['name' => 'PELANGGAN']);
+        $user = $this->userWithPermissions(['edit_sales']);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'OLD-002',
+            'nama' => 'Pelanggan Lama',
+            'status' => 'AKTIF',
+        ]);
+
+        $this->actingAs($user)->put(route('customers.update', $customer), [
+            'kode_pelanggan' => $customer->kode_pelanggan,
+            'nama' => $customer->nama,
+            'telepon' => '08222222222',
+            'status' => 'AKTIF',
+        ])->assertRedirect(route('customers.show', $customer));
+
+        $customer->refresh();
+        $this->assertNotNull($customer->user);
+        $this->assertSame('08222222222', $customer->user->phone);
+        $this->assertDatabaseCount('users', 2);
+    }
+
+    public function test_service_role_can_quick_create_customer_and_account(): void
+    {
+        Role::firstOrCreate(['name' => 'PELANGGAN']);
+        $user = $this->userWithPermissions(['create_service']);
+
+        $this->actingAs($user)->postJson(route('service.customers.quick-store'), [
+            'nama' => 'Pelanggan Service Baru',
+            'telepon' => '08333333333',
+        ])->assertOk()->assertJsonPath('nama', 'Pelanggan Service Baru');
+
+        $this->assertDatabaseHas('users', [
+            'phone' => '08333333333',
+            'status' => 'AKTIF',
+            'role_id' => Role::where('name', 'PELANGGAN')->value('id'),
+        ]);
     }
 
     public function test_purchase_role_can_create_search_and_deactivate_supplier(): void
     {
         $user = $this->userWithPermissions(['view_purchases', 'create_purchases', 'edit_purchases']);
 
+        $this->actingAs($user)->get(route('suppliers.create'))
+            ->assertOk()
+            ->assertSee('value="S01"', false)
+            ->assertSee('readonly', false);
+
         $this->actingAs($user)->post(route('suppliers.store'), [
-            'kode_supplier' => 'SUP-001',
+            'kode_supplier' => 'SUP-FORGED-CODE',
             'nama' => 'PT Laptop Indonesia',
             'kontak' => 'Rina',
             'telepon' => '021555000',
@@ -62,12 +185,13 @@ class MasterDataTest extends TestCase
             'status' => 'AKTIF',
         ])->assertRedirect();
 
-        $supplier = Supplier::where('kode_supplier', 'SUP-001')->firstOrFail();
+        $supplier = Supplier::where('nama', 'PT Laptop Indonesia')->firstOrFail();
+        $this->assertSame('S01', $supplier->kode_supplier);
         $this->actingAs($user)->get(route('suppliers.index', ['q' => 'supplier@example.com']))
             ->assertOk()->assertSee('PT Laptop Indonesia');
 
         $this->actingAs($user)->put(route('suppliers.update', $supplier), [
-            'kode_supplier' => 'SUP-001',
+            'kode_supplier' => 'S01',
             'nama' => 'PT Laptop Indonesia',
             'kontak' => 'Rina',
             'telepon' => '021555000',
@@ -77,6 +201,26 @@ class MasterDataTest extends TestCase
         ])->assertRedirect(route('suppliers.show', $supplier));
 
         $this->assertDatabaseHas('supplier', ['id' => $supplier->id, 'status' => 'NONAKTIF']);
+    }
+
+    public function test_supplier_creation_stops_at_fifty_records(): void
+    {
+        $user = $this->userWithPermissions(['create_purchases']);
+
+        for ($number = 1; $number <= 50; $number++) {
+            Supplier::create([
+                'kode_supplier' => 'OLD-'.str_pad((string) $number, 2, '0', STR_PAD_LEFT),
+                'nama' => 'Supplier '.$number,
+                'status' => 'AKTIF',
+            ]);
+        }
+
+        $this->actingAs($user)->post(route('suppliers.store'), [
+            'nama' => 'Supplier Tambahan',
+            'status' => 'AKTIF',
+        ])->assertSessionHasErrors('kode_supplier');
+
+        $this->assertDatabaseCount('supplier', 50);
     }
 
     public function test_laptop_hpp_is_not_exposed_or_writable_without_financial_permission(): void

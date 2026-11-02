@@ -7,12 +7,14 @@ use App\Models\KasMutasi;
 use App\Models\Kategori;
 use App\Models\Laptop;
 use App\Models\Pelanggan;
+use App\Models\Pembayaran;
 use App\Models\Pendapatan;
 use App\Models\Penjualan;
 use App\Models\Permission;
 use App\Models\Produk;
 use App\Models\Role;
 use App\Models\Service;
+use App\Models\ServiceApproval;
 use App\Models\Supplier;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -57,9 +59,8 @@ class CashierOperationsTest extends TestCase
     {
         $cashier = $this->cashier();
         $this->actingAs($cashier)->post(route('cash.shifts.open'), ['opening_cash' => 200000])->assertRedirect();
-        $customer = Pelanggan::create(['kode_pelanggan' => 'CUS-001', 'nama' => 'Nadia Contoh', 'status' => 'AKTIF']);
-        $technicianRole = Role::create(['name' => 'TEKNISI']);
-        $technician = User::factory()->create(['role_id' => $technicianRole->id]);
+        [$customer, $customerAccount] = $this->customerWithAccount('CUS-001');
+        $technician = $this->technician();
         $part = $this->product('PART-001', 4, 'SPAREPART', 25000);
         $this->get(route('service.create'))->assertOk()->assertSee('Terima Service');
 
@@ -68,10 +69,24 @@ class CashierOperationsTest extends TestCase
             'jenis_perangkat' => 'Laptop', 'merek' => 'Lenovo', 'model' => 'ThinkPad T14',
             'serial_number' => 'SN-CUST-1', 'keluhan' => 'Tidak mengisi daya',
             'teknisi_id' => $technician->id,
-        ])->assertRedirect(route('service.show', Service::firstOrFail()));
+        ])->assertRedirect(route('service.print', [Service::firstOrFail(), 'intake']));
 
         $service = Service::firstOrFail();
+        $this->get(route('service.print', [$service, 'intake']))
+            ->assertOk()
+            ->assertSee('Tanda Terima Service')
+            ->assertSee('SN-CUST-1')
+            ->assertSee('Tidak mengisi daya');
         $this->assertSame(0.0, (float) $service->total);
+        $this->post(route('service.approvals.store', $service), [
+            'jasa' => 50000, 'diskon_tipe' => 'NOMINAL', 'catatan' => 'Belum ada diagnosis.',
+        ])->assertForbidden();
+        $this->actingAs($technician)->post(route('service.progress.store', $service), [
+            'status' => 'DIAGNOSA',
+            'diagnosa' => 'Konektor pengisian daya rusak.',
+            'catatan' => 'Pemeriksaan awal selesai.',
+        ])->assertRedirect();
+        $this->actingAs($cashier);
         $this->post(route('service.approvals.store', $service), [
             'jasa' => 50000, 'diskon_tipe' => 'NOMINAL', 'diskon_nilai' => 0,
             'pajak_aktif' => 0, 'pajak_persen' => 11, 'parts' => [['produk_id' => $part->id, 'qty' => 1]],
@@ -80,7 +95,16 @@ class CashierOperationsTest extends TestCase
         $approval = $service->approvals()->firstOrFail();
         $this->assertDatabaseHas('produk', ['id' => $part->id, 'stok' => 4]);
         $this->post(route('service.approvals.decision', [$service, $approval]), ['decision' => 'APPROVED'])
+            ->assertSessionHasErrors('catatan');
+        $this->assertDatabaseHas('service_approvals', ['id' => $approval->id, 'status' => 'PENDING']);
+        $this->actingAs($customerAccount)
+            ->post(route('service.approvals.decision', [$service, $approval]), ['decision' => 'APPROVED'])
             ->assertRedirect();
+        $this->assertDatabaseHas('service_approvals', [
+            'id' => $approval->id,
+            'approved_by' => $customerAccount->id,
+        ]);
+        $this->actingAs($cashier);
         $service->refresh();
         $this->assertSame(75000.0, (float) $service->total);
         $this->post(route('service.payments.store', $service), ['nominal' => 75000, 'metode' => 'CASH'])->assertRedirect();
@@ -90,6 +114,50 @@ class CashierOperationsTest extends TestCase
         $this->assertDatabaseHas('service_progress', ['service_id' => $service->id, 'status' => 'DITERIMA']);
         $this->assertDatabaseHas('produk', ['id' => $part->id, 'stok' => 3]);
         $this->assertDatabaseHas('pendapatan', ['referensi_type' => 'SERVICE', 'referensi_id' => $service->id, 'nominal' => 75000]);
+    }
+
+    public function test_completed_service_print_shows_paid_amount_and_remaining_balance(): void
+    {
+        $cashier = $this->cashier();
+        [$customer] = $this->customerWithAccount('CUS-PRINT');
+        $technician = $this->technician();
+        $service = Service::create([
+            'no_service' => 'SRV-PRINT-001',
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now()->subDay(),
+            'tanggal_selesai' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'merek' => 'Lenovo',
+            'model' => 'ThinkPad',
+            'keluhan' => 'Tidak menyala',
+            'teknisi_id' => $technician->id,
+            'status' => 'SELESAI',
+            'jasa' => 100000,
+            'total' => 150000,
+            'dibayar' => 50000,
+        ]);
+        Pembayaran::create([
+            'tanggal' => now(),
+            'referensi_type' => 'SERVICE',
+            'referensi_id' => $service->id,
+            'metode' => 'TRANSFER',
+            'nominal' => 50000,
+            'status' => 'LUNAS',
+            'user_id' => $cashier->id,
+            'created_at' => now(),
+        ]);
+
+        $this->actingAs($cashier)->get(route('service.print', [$service, 'final']))
+            ->assertOk()
+            ->assertSee('Tagihan Service')
+            ->assertSee('Rp 150.000')
+            ->assertSee('Rp 50.000')
+            ->assertSee('Rp 100.000')
+            ->assertSee('TRANSFER');
+
+        $this->actingAs($technician)
+            ->get(route('service.print', [$service, 'final']))
+            ->assertForbidden();
     }
 
     public function test_cashier_can_record_cash_income_and_non_cash_income_without_changing_cash_balance(): void
@@ -117,21 +185,31 @@ class CashierOperationsTest extends TestCase
     {
         $cashier = $this->cashier();
         $this->actingAs($cashier)->post(route('cash.shifts.open'), ['opening_cash' => 10000])->assertRedirect();
-        $customer = Pelanggan::create(['kode_pelanggan' => 'CUS-SRV-02', 'nama' => 'Pelanggan Service', 'status' => 'AKTIF']);
+        [$customer, $customerAccount] = $this->customerWithAccount('CUS-SRV-02');
+        $technician = $this->technician();
 
         $this->post(route('service.store'), [
             'pelanggan_id' => $customer->id,
-            'jenis_perangkat' => 'Laptop', 'keluhan' => 'Layar tidak tampil', 'jasa' => 80000,
-            'dibayar' => 0, 'metode' => 'CASH',
+            'jenis_perangkat' => 'Laptop', 'keluhan' => 'Layar tidak tampil',
+            'teknisi_id' => $technician->id,
         ])->assertRedirect();
 
         $service = Service::firstOrFail();
+        $this->actingAs($technician)->post(route('service.progress.store', $service), [
+            'status' => 'DIAGNOSA',
+            'diagnosa' => 'Kabel fleksibel layar perlu diperiksa.',
+            'catatan' => 'Pemeriksaan awal selesai.',
+        ])->assertRedirect();
+        $this->actingAs($cashier);
         $this->post(route('service.approvals.store', $service), [
             'jasa' => 80000, 'diskon_tipe' => 'NOMINAL', 'diskon_nilai' => 0,
             'pajak_aktif' => 0, 'pajak_persen' => 11, 'catatan' => 'Pemeriksaan layar dan perbaikan.',
         ])->assertRedirect();
         $approval = $service->approvals()->firstOrFail();
-        $this->post(route('service.approvals.decision', [$service, $approval]), ['decision' => 'APPROVED'])->assertRedirect();
+        $this->actingAs($customerAccount)
+            ->post(route('service.approvals.decision', [$service, $approval]), ['decision' => 'APPROVED'])
+            ->assertRedirect();
+        $this->actingAs($cashier);
         $service->refresh();
         $this->get(route('service.show', $service))->assertOk()->assertSee('Simpan Pembayaran');
         $this->assertDatabaseHas('pembayaran', ['referensi_type' => 'SERVICE', 'referensi_id' => $service->id, 'metode' => 'PIUTANG', 'status' => 'PENDING', 'nominal' => 80000]);
@@ -143,6 +221,116 @@ class CashierOperationsTest extends TestCase
 
         $this->post(route('service.payments.store', $service), ['nominal' => 50000, 'metode' => 'TRANSFER'])->assertRedirect();
         $this->assertDatabaseHas('service', ['id' => $service->id, 'dibayar' => 80000]);
+    }
+
+    public function test_cashier_records_paid_service_handover_and_technician_cannot_do_it(): void
+    {
+        $cashier = $this->cashier();
+        $technician = $this->technician();
+        $customer = Pelanggan::create(['kode_pelanggan' => 'CUS-HANDOVER', 'nama' => 'Pelanggan Service', 'status' => 'AKTIF']);
+        $service = Service::create([
+            'no_service' => 'SRV-HANDOVER-001',
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'teknisi_id' => $technician->id,
+            'status' => 'SELESAI',
+            'total' => 80000,
+            'dibayar' => 80000,
+        ]);
+
+        $this->actingAs($technician)
+            ->post(route('service.handover.store', $service), ['nama_penerima' => 'Pelanggan Service'])
+            ->assertForbidden();
+        $this->post(route('service.progress.store', $service), [
+            'status' => 'SUDAH_DIAMBIL',
+            'catatan' => 'Pelanggan mengambil perangkat.',
+        ])->assertNotFound();
+        $this->actingAs($cashier)
+            ->post(route('service.handover.store', $service), ['nama_penerima' => 'Pelanggan Service'])
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'SUDAH_DIAMBIL']);
+        $this->assertDatabaseHas('service_progress', [
+            'service_id' => $service->id,
+            'status' => 'SUDAH_DIAMBIL',
+            'updated_by' => $cashier->id,
+            'catatan' => 'Perangkat diserahkan kepada Pelanggan Service.',
+        ]);
+    }
+
+    public function test_service_cannot_be_handed_over_before_completion_or_full_payment(): void
+    {
+        $cashier = $this->cashier();
+        $customer = Pelanggan::create(['kode_pelanggan' => 'CUS-HANDOVER-2', 'nama' => 'Pelanggan Service', 'status' => 'AKTIF']);
+        $technician = $this->technician();
+        $service = Service::create([
+            'no_service' => 'SRV-HANDOVER-002',
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'teknisi_id' => $technician->id,
+            'status' => 'DALAM_PERBAIKAN',
+            'total' => 80000,
+            'dibayar' => 30000,
+        ]);
+
+        $this->actingAs($cashier)
+            ->post(route('service.handover.store', $service), ['nama_penerima' => 'Pelanggan Service'])
+            ->assertSessionHasErrors('handover');
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'DALAM_PERBAIKAN']);
+        $this->assertDatabaseCount('service_progress', 0);
+
+        $service->forceFill(['status' => 'SELESAI'])->save();
+        $this->post(route('service.handover.store', $service), ['nama_penerima' => 'Pelanggan Service'])
+            ->assertSessionHasErrors('handover');
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'SELESAI']);
+        $this->assertDatabaseCount('service_progress', 0);
+    }
+
+    public function test_cashier_must_record_customer_consent_when_deciding_an_estimate(): void
+    {
+        $cashier = $this->cashier();
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'CUS-APPROVAL',
+            'nama' => 'Pelanggan Service',
+            'status' => 'AKTIF',
+        ]);
+        $service = Service::create([
+            'no_service' => 'SRV-APPROVAL-001',
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'diagnosa' => 'Konektor pengisian daya rusak.',
+            'status' => 'MENUNGGU_PERSETUJUAN',
+            'jasa' => 80000,
+            'total' => 80000,
+        ]);
+        $approval = ServiceApproval::create([
+            'service_id' => $service->id,
+            'estimasi' => 80000,
+            'status' => 'PENDING',
+            'requested_by' => $cashier->id,
+        ]);
+
+        $this->actingAs($cashier)
+            ->post(route('service.approvals.decision', [$service, $approval]), ['decision' => 'APPROVED'])
+            ->assertSessionHasErrors('catatan');
+        $this->assertDatabaseHas('service_approvals', ['id' => $approval->id, 'status' => 'PENDING']);
+
+        $this->post(route('service.approvals.decision', [$service, $approval]), [
+            'decision' => 'APPROVED',
+            'catatan' => 'Pelanggan menyetujui di loket setelah rincian biaya dijelaskan.',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('service_approvals', [
+            'id' => $approval->id,
+            'status' => 'APPROVED',
+            'approved_by' => $cashier->id,
+            'catatan' => 'Keputusan: Pelanggan menyetujui di loket setelah rincian biaya dijelaskan.',
+        ]);
     }
 
     public function test_pos_can_sell_a_serialized_laptop_on_credit_and_collect_the_receivable_later(): void
@@ -186,11 +374,28 @@ class CashierOperationsTest extends TestCase
         ])->assertRedirect();
 
         $sale = Penjualan::firstOrFail();
-        $this->get(route('sales.show', $sale))
+        $response = $this->get(route('sales.show', $sale));
+        $response
             ->assertOk()
             ->assertSee('Terima Pembayaran')
             ->assertSee('RAM 16 GB')
             ->assertSee('Storage SSD NVMe 512 GB');
+
+        $document = new \DOMDocument;
+        $previousErrorSetting = libxml_use_internal_errors(true);
+        $document->loadHTML($response->getContent());
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousErrorSetting);
+        $invoice = (new \DOMXPath($document))->query('//*[@id="print-invoice"]')->item(0);
+
+        $this->assertNotNull($invoice);
+        $invoiceText = $invoice->textContent;
+        $this->assertStringContainsString('LAP-001', $invoiceText);
+        $this->assertStringNotContainsString('SERIAL-LAP-001', $invoiceText);
+        $this->assertStringNotContainsString('Intel Core i7', $invoiceText);
+        $this->assertStringNotContainsString('RAM 16 GB', $invoiceText);
+        $this->assertStringNotContainsString('Storage SSD NVMe 512 GB', $invoiceText);
+        $this->assertStringContainsString('Invoice', $invoiceText);
         $this->assertSame('PIUTANG', $sale->status);
         $this->assertSame(48452.5, (float) $sale->total);
         $this->assertDatabaseHas('laptop', ['id' => $laptop->id, 'status' => 'SOLD', 'penjualan_id' => $sale->id]);
@@ -242,6 +447,31 @@ class CashierOperationsTest extends TestCase
     {
         $role = Role::create(['name' => 'KASIR']);
         foreach (['view_dashboard', 'view_sales', 'create_sales', 'collect_sales_payments', 'discount_sales', 'view_service', 'create_service', 'view_income', 'create_income', 'view_cash'] as $name) {
+            $role->permissions()->attach(Permission::firstOrCreate(['name' => $name]));
+        }
+
+        return User::factory()->create(['role_id' => $role->id]);
+    }
+
+    /** @return array{Pelanggan, User} */
+    private function customerWithAccount(string $code): array
+    {
+        $role = Role::firstOrCreate(['name' => 'PELANGGAN']);
+        $account = User::factory()->create(['role_id' => $role->id]);
+        $customer = Pelanggan::create([
+            'user_id' => $account->id,
+            'kode_pelanggan' => $code,
+            'nama' => 'Pelanggan Service',
+            'status' => 'AKTIF',
+        ]);
+
+        return [$customer, $account];
+    }
+
+    private function technician(): User
+    {
+        $role = Role::create(['name' => 'TEKNISI']);
+        foreach (['view_service', 'create_service', 'update_service_progress'] as $name) {
             $role->permissions()->attach(Permission::firstOrCreate(['name' => $name]));
         }
 

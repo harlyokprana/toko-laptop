@@ -2,16 +2,15 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\KasMutasi;
 use App\Models\KasirShift;
-use App\Models\Pendapatan;
+use App\Models\KasMutasi;
 use App\Models\Pengeluaran;
-use App\Support\CsvSanitizer;
 use App\Services\CashLedgerService;
+use App\Support\CsvSanitizer;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -50,50 +49,11 @@ class CashController extends Controller
                 ),
             };
 
-            if ($data['jenis'] === 'PENAMBAHAN_KAS') {
-                $income = Pendapatan::create([
-                    'tanggal' => now(),
-                    'kode_pendapatan' => 'INC-'.now()->format('YmdHis').'-'.Str::upper(Str::random(4)),
-                    'jenis_pendapatan' => 'PENAMBAHAN_KAS',
-                    'sumber' => 'Kas manual',
-                    'nominal' => $amount,
-                    'keterangan' => $data['keterangan'],
-                    'user_id' => $request->user()->id,
-                    'referensi_type' => 'MANUAL_KAS',
-                    'referensi_id' => $mutation->id,
-                ]);
-                $mutation->update(['referensi_id' => $income->id]);
-            } elseif ($data['jenis'] === 'PENGAMBILAN_KAS') {
+            if ($data['jenis'] === 'PENGAMBILAN_KAS') {
                 $expense = Pengeluaran::create([
                     'tanggal' => now(),
                     'kode_beban' => 'EXP-'.now()->format('Ymd').'-'.Str::upper(Str::random(6)),
                     'kategori_beban' => 'PENGAMBILAN_KAS',
-                    'keterangan' => $data['keterangan'],
-                    'nominal' => $amount,
-                    'metode_bayar' => 'CASH',
-                    'user_id' => $request->user()->id,
-                    'referensi_type' => 'MANUAL_KAS',
-                    'referensi_id' => $mutation->id,
-                ]);
-                $mutation->update(['referensi_id' => $expense->id]);
-            } elseif (($data['arah'] ?? '') === 'MASUK') {
-                $income = Pendapatan::create([
-                    'tanggal' => now(),
-                    'kode_pendapatan' => 'INC-'.now()->format('YmdHis').'-'.Str::upper(Str::random(4)),
-                    'jenis_pendapatan' => 'PENYESUAIAN_KAS',
-                    'sumber' => 'Kas manual',
-                    'nominal' => $amount,
-                    'keterangan' => $data['keterangan'],
-                    'user_id' => $request->user()->id,
-                    'referensi_type' => 'MANUAL_KAS',
-                    'referensi_id' => $mutation->id,
-                ]);
-                $mutation->update(['referensi_id' => $income->id]);
-            } else {
-                $expense = Pengeluaran::create([
-                    'tanggal' => now(),
-                    'kode_beban' => 'EXP-'.now()->format('Ymd').'-'.Str::upper(Str::random(6)),
-                    'kategori_beban' => 'PENYESUAIAN_KAS',
                     'keterangan' => $data['keterangan'],
                     'nominal' => $amount,
                     'metode_bayar' => 'CASH',
@@ -120,6 +80,7 @@ class CashController extends Controller
 
         if (($filters['export'] ?? null) === 'csv') {
             $rows = (clone $query)->get();
+
             return response()->streamDownload(function () use ($rows): void {
                 $output = fopen('php://output', 'w');
                 fputcsv($output, ['Tanggal', 'Jenis', 'Referensi', 'Keterangan', 'Cash In', 'Cash Out', 'Saldo', 'User']);
@@ -135,12 +96,18 @@ class CashController extends Controller
         }
 
         $period = KasMutasi::query();
-        if (! empty($filters['date_from'])) $period->whereDate('tanggal', '>=', $filters['date_from']);
-        if (! empty($filters['date_to'])) $period->whereDate('tanggal', '<=', $filters['date_to']);
+        if (! empty($filters['date_from'])) {
+            $period->whereDate('tanggal', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $period->whereDate('tanggal', '<=', $filters['date_to']);
+        }
         $cashIn = (clone $period)->sum('debit');
         $cashOut = (clone $period)->sum('kredit');
         $balanceQuery = KasMutasi::query();
-        if (! empty($filters['date_to'])) $balanceQuery->whereDate('tanggal', '<=', $filters['date_to']);
+        if (! empty($filters['date_to'])) {
+            $balanceQuery->whereDate('tanggal', '<=', $filters['date_to']);
+        }
         $balance = $balanceQuery->orderByDesc('tanggal')->orderByDesc('id')->value('saldo') ?? 0;
         $filtered = clone $query;
 
@@ -154,9 +121,15 @@ class CashController extends Controller
 
     private function applyFilters(Builder $query, array $filters): void
     {
-        if (! empty($filters['date_from'])) $query->whereDate('tanggal', '>=', $filters['date_from']);
-        if (! empty($filters['date_to'])) $query->whereDate('tanggal', '<=', $filters['date_to']);
-        if (! empty($filters['jenis'])) $query->where('jenis', $filters['jenis']);
+        if (! empty($filters['date_from'])) {
+            $query->whereDate('tanggal', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $query->whereDate('tanggal', '<=', $filters['date_to']);
+        }
+        if (! empty($filters['jenis'])) {
+            $query->where('jenis', $filters['jenis']);
+        }
         if ($search = trim((string) ($filters['q'] ?? ''))) {
             $query->where(fn (Builder $builder) => $builder->where('referensi_type', 'like', "%{$search}%")->orWhere('keterangan', 'like', "%{$search}%"));
         }

@@ -14,6 +14,8 @@
 <body class="min-h-screen bg-slate-100 font-sans text-slate-800 antialiased">
 @php
     $user = auth()->user();
+    $notificationItems = $user->notifications()->latest()->limit(5)->get();
+    $unreadNotificationCount = $user->unreadNotifications()->count();
     $isCashier = $user->role?->name === 'KASIR';
     $groupDefinitions = $isCashier ? [
         ['label' => 'Kasir (POS)', 'icon' => 'cart', 'children' => [
@@ -103,7 +105,7 @@
 @endphp
 <div x-data="{ mobileOpen: false, sidebarCollapsed: false }" class="min-h-screen">
     <div x-show="mobileOpen" x-transition.opacity class="fixed inset-0 z-40 bg-slate-950/55 lg:hidden" @click="mobileOpen = false" style="display:none"></div>
-    <aside :class="[mobileOpen ? 'translate-x-0' : '-translate-x-full', sidebarCollapsed ? 'lg:w-20' : 'lg:w-60']" class="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-slate-200 bg-white text-slate-800 shadow-xl shadow-slate-900/[0.04] transition-all duration-200 lg:translate-x-0">
+    <aside :class="[mobileOpen ? 'translate-x-0' : '-translate-x-full', sidebarCollapsed ? 'lg:w-20' : 'lg:w-60']" class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-slate-200 bg-white text-slate-800 shadow-xl shadow-slate-900/[0.04] transition-all duration-200 lg:translate-x-0">
         <a href="{{ route('dashboard') }}" class="flex h-[72px] shrink-0 items-center gap-3 border-b border-slate-100 px-4">
             <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-700 text-white"><svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M2 20h20M8 16l-1 4m9-4 1 4"/></svg></span>
             <span x-show="!sidebarCollapsed" x-transition.opacity class="min-w-0"><span class="block truncate text-sm font-bold tracking-wide text-slate-950">Laptop Prime.Com</span><span class="mt-0.5 block text-[9px] font-semibold uppercase tracking-[0.16em] text-emerald-700">Sales · Service · Accessories</span></span>
@@ -138,7 +140,7 @@
     </aside>
 
     <div :class="sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-60'" class="min-h-screen transition-[padding] duration-200">
-        <header class="sticky top-0 z-30 flex min-h-[68px] items-center gap-3 border-b border-slate-200 bg-white/95 px-3 backdrop-blur sm:px-5 lg:px-6">
+        <header class="app-header sticky top-0 z-30 flex min-h-[68px] items-center gap-3 border-b border-slate-200 bg-white/95 px-3 backdrop-blur sm:px-5 lg:px-6">
             <button type="button" @click="if (window.innerWidth < 1024) mobileOpen = true; else sidebarCollapsed = !sidebarCollapsed" class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-slate-600 hover:bg-slate-100" aria-label="Buka atau ciutkan menu"><svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/></svg></button>
             <form action="{{ route('global-search') }}" method="GET" class="relative min-w-0 max-w-3xl flex-1">
                 <x-nav-icon name="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/>
@@ -150,13 +152,41 @@
                 <svg class="theme-icon-moon h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M20.2 15.1A8.5 8.5 0 0 1 8.9 3.8 8.5 8.5 0 1 0 20.2 15.1Z"/></svg>
                 <svg class="theme-icon-sun hidden h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
             </button>
-            @if($user->hasPermission('view_service'))<a href="{{ route('module.service') }}" class="relative grid h-10 w-10 shrink-0 place-items-center rounded-lg text-slate-600 hover:bg-slate-100" title="Lihat service"><x-nav-icon name="bell"/><span class="sr-only">Notifikasi service</span></a>@endif
+            <div x-data="{ open: false }" class="relative shrink-0">
+                <button type="button" @click="open = !open" @click.outside="open = false" class="relative grid h-10 w-10 place-items-center rounded-lg text-slate-600 hover:bg-slate-100" aria-label="Notifikasi" :aria-expanded="open.toString()">
+                    <x-nav-icon name="bell"/>
+                    @if($unreadNotificationCount > 0)
+                        <span class="absolute -right-0.5 -top-0.5 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{{ $unreadNotificationCount > 99 ? '99+' : $unreadNotificationCount }}</span>
+                    @endif
+                </button>
+                <div x-show="open" x-transition.origin.top.right @click.outside="open = false" style="display:none" class="absolute right-0 top-12 z-50 w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                    <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                        <span class="text-sm font-bold text-slate-900">Notifikasi</span>
+                        @if($unreadNotificationCount > 0)<span class="text-xs font-semibold text-emerald-700">{{ $unreadNotificationCount }} belum dibaca</span>@endif
+                    </div>
+                    <div class="max-h-80 overflow-y-auto">
+                        @forelse($notificationItems as $notification)
+                            <a href="{{ route('notifications.open', $notification->id) }}" @class([
+                                'block border-b border-slate-100 px-4 py-3 last:border-0 hover:bg-slate-50',
+                                'bg-emerald-50/60' => $notification->unread(),
+                            ])>
+                                <span class="block truncate text-sm font-semibold text-slate-900">{{ $notification->data['title'] ?? 'Pembaruan' }}</span>
+                                <span class="mt-1 block line-clamp-2 text-xs text-slate-600">{{ $notification->data['message'] ?? '' }}</span>
+                                <span class="mt-1.5 block text-[11px] text-slate-400">{{ $notification->created_at->diffForHumans() }}</span>
+                            </a>
+                        @empty
+                            <p class="px-4 py-8 text-center text-sm text-slate-500">Belum ada notifikasi.</p>
+                        @endforelse
+                    </div>
+                    <a href="{{ route('notifications.index') }}" class="block border-t border-slate-100 px-4 py-3 text-center text-sm font-semibold text-emerald-700 hover:bg-emerald-50">Lihat semua notifikasi</a>
+                </div>
+            </div>
             <div x-data="{ open: false }" class="relative shrink-0">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-slate-50 sm:gap-3 sm:px-2"><span class="grid h-8 w-8 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-700">{{ $userInitial }}</span><span class="hidden min-w-0 sm:block"><span class="block max-w-28 truncate text-xs font-semibold text-slate-900">{{ $user->name }}</span><span class="block text-[11px] text-slate-500">{{ $user->role?->name }}</span></span><svg class="hidden h-4 w-4 text-slate-400 sm:block" viewBox="0 0 20 20" fill="currentColor"><path d="m5.5 7.5 4.5 4 4.5-4"/></svg></button>
                 <div x-show="open" x-transition.origin.top.right @click.outside="open = false" style="display:none" class="absolute right-0 top-12 z-50 w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl"><a href="{{ route('profile.edit') }}" class="block rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Profil</a><form method="POST" action="{{ route('logout') }}">@csrf<button class="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-rose-700 hover:bg-rose-50">Keluar</button></form></div>
             </div>
         </header>
-        <main class="mx-auto max-w-[1600px] px-3 py-5 sm:px-5 lg:px-6 lg:py-6">{{ $slot }}</main>
+        <main class="app-main mx-auto max-w-[1600px] px-3 py-5 sm:px-5 lg:px-6 lg:py-6">{{ $slot }}</main>
     </div>
 </div>
 <script>

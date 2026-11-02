@@ -20,6 +20,7 @@ class DatabaseSeeder extends Seeder
             DemoAccountsSeeder::class,
             BusinessSampleDataSeeder::class,
             DemoOperationsSeeder::class,
+            ProductTypeSampleSeeder::class,
         ]);
     }
 }

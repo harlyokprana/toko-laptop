@@ -19,7 +19,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ExpenseController extends Controller
 {
-    private const CATEGORIES = ['LISTRIK', 'INTERNET', 'TRANSPORT', 'MAKAN', 'ONGKIR', 'SEWA', 'PEMBELIAN_INVENTARIS', 'MAINTENANCE', 'OPERASIONAL', 'GAJI', 'LAINNYA', 'PENGAMBILAN_KAS', 'PENYESUAIAN_KAS'];
+    private const CATEGORIES = ['LISTRIK', 'INTERNET', 'TRANSPORT', 'MAKAN', 'ONGKIR', 'SEWA', 'PEMBELIAN_INVENTARIS', 'MAINTENANCE', 'OPERASIONAL', 'GAJI', 'LAINNYA'];
+
     private const METHODS = ['CASH', 'TRANSFER', 'QRIS', 'DEBIT', 'KREDIT'];
 
     public function index(Request $request): View|StreamedResponse
@@ -30,10 +31,12 @@ class ExpenseController extends Controller
             'q' => ['nullable', 'string', 'max:150'], 'export' => ['nullable', Rule::in(['csv'])],
         ]);
         $query = Pengeluaran::query()->with('user:id,name')->latest('tanggal')->latest('id');
+        $query->whereNotIn('kategori_beban', Pengeluaran::CASH_BALANCE_CATEGORIES);
         $this->applyFilters($query, $filters);
 
         if (($filters['export'] ?? null) === 'csv') {
             $rows = (clone $query)->get();
+
             return response()->streamDownload(function () use ($rows): void {
                 $output = fopen('php://output', 'w');
                 fputcsv($output, ['Tanggal', 'Kode Beban', 'Kategori', 'Keterangan', 'Nominal', 'Metode Bayar', 'User']);
@@ -52,12 +55,13 @@ class ExpenseController extends Controller
         }
 
         $totalsQuery = clone $query;
+
         return view('expenses.index', ['expenses' => $query->paginate(20)->withQueryString(), 'filters' => $filters, 'total' => $totalsQuery->sum('nominal'), 'categories' => self::CATEGORIES, 'methods' => self::METHODS, 'printMode' => false]);
     }
 
     public function create(): View
     {
-        return view('expenses.form', ['expense' => new Pengeluaran(), 'categories' => self::CATEGORIES, 'methods' => self::METHODS, 'users' => User::query()->orderBy('name')->get(['id', 'name'])]);
+        return view('expenses.form', ['expense' => new Pengeluaran, 'categories' => self::CATEGORIES, 'methods' => self::METHODS, 'users' => User::query()->orderBy('name')->get(['id', 'name'])]);
     }
 
     public function store(Request $request, CashLedgerService $cash): RedirectResponse
@@ -74,6 +78,7 @@ class ExpenseController extends Controller
             if ($expense->metode_bayar === 'CASH') {
                 $cash->disbursement((float) $expense->nominal, $request->user()->id, 'pengeluaran', $expense->id, 'Pengeluaran '.$expense->kode_beban.' · '.$expense->kategori_beban);
             }
+
             return $expense;
         });
 
@@ -83,6 +88,7 @@ class ExpenseController extends Controller
     public function edit(Pengeluaran $expense): View
     {
         abort_if($expense->payroll()->exists(), 403, 'Pengeluaran payroll dikelola dari modul payroll.');
+
         return view('expenses.form', ['expense' => $expense, 'categories' => self::CATEGORIES, 'methods' => self::METHODS, 'users' => User::query()->orderBy('name')->get(['id', 'name'])]);
     }
 
@@ -106,6 +112,7 @@ class ExpenseController extends Controller
                 $cash->disbursement($newCash, $request->user()->id, 'pengeluaran', $locked->id, 'Pengeluaran '.$locked->kode_beban.' (koreksi)');
             }
         });
+
         return redirect()->route('expenses.index')->with('status', 'Pengeluaran diperbarui dan mutasi kas dikoreksi bila diperlukan.');
     }
 
@@ -119,6 +126,7 @@ class ExpenseController extends Controller
             }
             $locked->delete();
         });
+
         return back()->with('status', 'Pengeluaran dihapus; koreksi kas tersimpan jika transaksi tunai.');
     }
 
@@ -141,10 +149,18 @@ class ExpenseController extends Controller
 
     private function applyFilters(Builder $query, array $filters): void
     {
-        if (! empty($filters['date_from'])) $query->whereDate('tanggal', '>=', $filters['date_from']);
-        if (! empty($filters['date_to'])) $query->whereDate('tanggal', '<=', $filters['date_to']);
-        if (! empty($filters['kategori'])) $query->where('kategori_beban', $filters['kategori']);
-        if (! empty($filters['metode'])) $query->where('metode_bayar', $filters['metode']);
+        if (! empty($filters['date_from'])) {
+            $query->whereDate('tanggal', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $query->whereDate('tanggal', '<=', $filters['date_to']);
+        }
+        if (! empty($filters['kategori'])) {
+            $query->where('kategori_beban', $filters['kategori']);
+        }
+        if (! empty($filters['metode'])) {
+            $query->where('metode_bayar', $filters['metode']);
+        }
         if ($search = trim((string) ($filters['q'] ?? ''))) {
             $query->where(fn (Builder $builder) => $builder->where('kode_beban', 'like', "%{$search}%")
                 ->orWhere('kategori_beban', 'like', "%{$search}%")->orWhere('keterangan', 'like', "%{$search}%"));

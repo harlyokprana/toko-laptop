@@ -137,32 +137,43 @@ class ModuleController extends Controller
                 break;
 
             case 'service-progress':
-                $query = ServiceProgress::query()
-                    ->with(['service:id,no_service,jenis_perangkat,merek,model,teknisi_id', 'updater:id,name'])
-                    ->whereHas('service', function (Builder $builder) use ($user) {
-                        if ($user->role?->name === 'TEKNISI') {
-                            $builder->where('teknisi_id', $user->id);
-                        } elseif ($user->role?->name === 'PELANGGAN') {
-                            $builder->whereHas('pelanggan', fn (Builder $customer) => $customer->where('user_id', $user->id));
-                        }
-                    })
-                    ->orderByDesc('created_at');
-                $stats = [$this->stat('Pembaruan progress', number_format((clone $query)->count()), 'Riwayat perkembangan pekerjaan service')];
-                $columns = ['service' => 'No. Service', 'perangkat' => 'Perangkat', 'progress' => 'Progress', 'status' => 'Status', 'catatan' => 'Catatan', 'waktu' => 'Diperbarui'];
-                $rows = $query->paginate(15)->withQueryString()->through(fn (ServiceProgress $progress) => [
-                    'service' => $progress->service?->no_service ?? '—',
-                    'perangkat' => trim(($progress->service?->merek ?? '').' '.($progress->service?->model ?? '')) ?: ($progress->service?->jenis_perangkat ?? '—'),
-                    'progress' => number_format((int) $progress->progress_percent).'% ',
-                    'status' => str_replace('_', ' ', $progress->status),
-                    'catatan' => $progress->catatan ?: '—',
-                    'waktu' => $progress->created_at?->format('d M Y H:i') ?? '—',
+                $latestProgress = ServiceProgress::query()
+                    ->whereColumn('service_id', 'service.id')
+                    ->orderByDesc('created_at')
+                    ->orderByDesc('id');
+                $query = Service::query()
+                    ->with(['teknisi:id,name'])
+                    ->withCount('progress')
+                    ->addSelect([
+                        'latest_progress_percent' => (clone $latestProgress)->select('progress_percent')->limit(1),
+                        'latest_progress_at' => (clone $latestProgress)->select('created_at')->limit(1),
+                    ])
+                    ->whereHas('progress')
+                    ->when($user->role?->name === 'TEKNISI', fn (Builder $builder) => $builder->where('teknisi_id', $user->id))
+                    ->when($user->role?->name === 'PELANGGAN', fn (Builder $builder) => $builder->whereHas(
+                        'pelanggan',
+                        fn (Builder $customer) => $customer->where('user_id', $user->id),
+                    ))
+                    ->latest('tanggal_masuk');
+                $stats = [$this->stat('Service dengan progress', number_format((clone $query)->count()), 'Satu baris untuk setiap nomor service')];
+                $columns = ['service' => 'No. Service', 'perangkat' => 'Perangkat', 'teknisi' => 'Teknisi', 'progress' => 'Progress', 'status' => 'Status', 'waktu' => 'Diperbarui'];
+                $rows = $query->paginate(15)->withQueryString()->through(fn (Service $service) => [
+                    'id' => $service->id,
+                    'service' => $service->no_service,
+                    'perangkat' => trim(($service->merek ?? '').' '.($service->model ?? '')) ?: ($service->jenis_perangkat ?? '—'),
+                    'teknisi' => $service->teknisi?->name ?? 'Belum ditugaskan',
+                    'progress' => number_format((int) ($service->latest_progress_percent ?? 0)).'%',
+                    'status' => str_replace('_', ' ', $service->status),
+                    'waktu' => $service->latest_progress_at
+                        ? Carbon::parse($service->latest_progress_at)->format('d M Y H:i')
+                        : '—',
                 ]);
                 break;
 
             case 'income':
-                $query = Pendapatan::query()->latest('tanggal');
+                $query = Pendapatan::query()->forProfitLoss()->latest('tanggal');
                 $stats = [
-                    $this->stat('Pendapatan bulan ini', $this->money(Pendapatan::query()->whereBetween('tanggal', $this->monthRange())->sum('nominal')), 'Jumlah catatan pendapatan periode ini'),
+                    $this->stat('Pendapatan bulan ini', $this->money(Pendapatan::query()->forProfitLoss()->whereBetween('tanggal', $this->monthRange())->sum('nominal')), 'Jumlah catatan pendapatan periode ini'),
                     $this->stat('Catatan bulan ini', number_format((clone $query)->whereBetween('tanggal', $this->monthRange())->count()), 'Transaksi pendapatan tercatat'),
                 ];
                 $columns = ['tanggal' => 'Tanggal', 'kode' => 'Kode', 'jenis' => 'Jenis', 'sumber' => 'Sumber', 'keterangan' => 'Keterangan', 'nominal' => 'Nominal'];
@@ -177,9 +188,9 @@ class ModuleController extends Controller
                 break;
 
             case 'expenses':
-                $query = Pengeluaran::query()->latest('tanggal');
+                $query = Pengeluaran::query()->whereNotIn('kategori_beban', Pengeluaran::CASH_BALANCE_CATEGORIES)->latest('tanggal');
                 $stats = [
-                    $this->stat('Pengeluaran bulan ini', $this->money(Pengeluaran::query()->whereBetween('tanggal', $this->monthRange())->sum('nominal')), 'Jumlah catatan pengeluaran periode ini'),
+                    $this->stat('Pengeluaran bulan ini', $this->money(Pengeluaran::query()->forProfitLoss()->whereBetween('tanggal', $this->monthRange())->sum('nominal')), 'Jumlah catatan pengeluaran periode ini'),
                     $this->stat('Catatan bulan ini', (string) (clone $query)->whereBetween('tanggal', $this->monthRange())->count(), 'Transaksi pengeluaran tercatat'),
                 ];
                 $columns = ['tanggal' => 'Tanggal', 'kode' => 'Kode', 'kategori' => 'Kategori', 'metode' => 'Metode Bayar', 'keterangan' => 'Keterangan', 'nominal' => 'Nominal'];
@@ -232,8 +243,8 @@ class ModuleController extends Controller
                         $this->stat('Stok menipis', number_format(Produk::query()->where('status', 'AKTIF')->whereColumn('stok', '<=', 'stok_minimum')->count()), 'Stok sama dengan atau di bawah minimum'),
                     ],
                     default => [
-                        $this->stat('Pendapatan', $this->money(Pendapatan::query()->whereBetween('tanggal', $range)->sum('nominal')), 'Periode bulan berjalan'),
-                        $this->stat('Pengeluaran', $this->money(Pengeluaran::query()->whereBetween('tanggal', $range)->sum('nominal')), 'Periode bulan berjalan'),
+                        $this->stat('Pendapatan', $this->money(Pendapatan::query()->forProfitLoss()->whereBetween('tanggal', $range)->sum('nominal')), 'Periode bulan berjalan'),
+                        $this->stat('Pengeluaran', $this->money(Pengeluaran::query()->forProfitLoss()->whereBetween('tanggal', $range)->sum('nominal')), 'Periode bulan berjalan'),
                         $this->stat('Pembelian', $this->money(Pembelian::query()->whereBetween('tanggal', $range)->where('status', '!=', 'BATAL')->sum('total')), 'Periode bulan berjalan'),
                     ],
                 };
@@ -247,7 +258,7 @@ class ModuleController extends Controller
                 $grossProfit = PenjualanDetail::query()
                     ->whereHas('penjualan', fn (Builder $builder) => $builder->whereBetween('tanggal', $range)->whereNotIn('status', ['BATAL', 'DRAFT']))
                     ->sum('laba');
-                $expenses = Pengeluaran::query()->whereBetween('tanggal', $range)->sum('nominal');
+                $expenses = Pengeluaran::query()->forProfitLoss()->whereBetween('tanggal', $range)->sum('nominal');
                 $stats = [
                     $this->stat('Laba kotor penjualan', $this->money($grossProfit), 'Akumulasi laba item transaksi penjualan'),
                     $this->stat('Pengeluaran', $this->money($expenses), 'Periode bulan berjalan'),

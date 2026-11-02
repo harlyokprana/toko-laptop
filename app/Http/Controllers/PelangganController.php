@@ -3,9 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Pelanggan;
+use App\Services\PelangganAccountService;
 use Illuminate\Contracts\View\View;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class PelangganController extends Controller
@@ -34,30 +37,43 @@ class PelangganController extends Controller
 
     public function create(): View
     {
-        return view('master-data.customers.form', ['customer' => new Pelanggan(['status' => 'AKTIF'])]);
+        return view('master-data.customers.form', [
+            'customer' => new Pelanggan(['status' => 'AKTIF', 'kode_pelanggan' => Pelanggan::generateCode()]),
+        ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, PelangganAccountService $accounts): RedirectResponse
     {
-        $customer = Pelanggan::create($this->validatedData($request));
+        $data = $this->validatedData($request);
+        $customer = DB::transaction(function () use ($data, $accounts): Pelanggan {
+            $customer = Pelanggan::create($data);
+            $accounts->ensureFor($customer);
+
+            return $customer;
+        });
 
         return redirect()->route('customers.show', $customer)->with('status', 'Pelanggan berhasil ditambahkan.');
     }
-    public function quickStore(Request $request): \Illuminate\Http\JsonResponse
+
+    public function quickStore(Request $request, PelangganAccountService $accounts): JsonResponse
     {
         $data = $request->validate([
             'nama' => ['required', 'string', 'max:255'],
-            'telepon' => ['nullable', 'string', 'max:30'],
+            'telepon' => ['required', 'string', 'max:30', Rule::unique('pelanggan', 'telepon')],
             'email' => ['nullable', 'email', 'max:255'],
-        ]);
+        ], ['telepon.unique' => 'Nomor telepon sudah digunakan pelanggan lain.']);
 
-        $customer = Pelanggan::create([
-            'kode_pelanggan' => 'C-'.str_pad((int) (Pelanggan::max('id') ?? 0) + 1, 5, '0', STR_PAD_LEFT),
-            'nama' => $data['nama'],
-            'telepon' => $data['telepon'] ?? null,
-            'email' => $data['email'] ?? null,
-            'status' => 'AKTIF',
-        ]);
+        $customer = DB::transaction(function () use ($data, $accounts): Pelanggan {
+            $customer = Pelanggan::create([
+                'nama' => $data['nama'],
+                'telepon' => $data['telepon'],
+                'email' => $data['email'] ?? null,
+                'status' => 'AKTIF',
+            ]);
+            $accounts->ensureFor($customer);
+
+            return $customer;
+        });
 
         return response()->json([
             'id' => $customer->id,
@@ -66,8 +82,6 @@ class PelangganController extends Controller
             'telepon' => $customer->telepon,
         ]);
     }
-
-
 
     public function show(Pelanggan $customer): View
     {
@@ -81,9 +95,17 @@ class PelangganController extends Controller
         return view('master-data.customers.form', compact('customer'));
     }
 
-    public function update(Request $request, Pelanggan $customer): RedirectResponse
+    public function update(Request $request, Pelanggan $customer, PelangganAccountService $accounts): RedirectResponse
     {
-        $customer->update($this->validatedData($request, $customer));
+        $data = $this->validatedData($request, $customer);
+
+        DB::transaction(function () use ($customer, $data, $accounts): void {
+            $customer->update($data);
+
+            if (filled($customer->telepon) && ! $customer->user) {
+                $accounts->ensureFor($customer);
+            }
+        });
 
         return redirect()->route('customers.show', $customer)->with('status', 'Data pelanggan berhasil diperbarui.');
     }
@@ -91,13 +113,30 @@ class PelangganController extends Controller
     /** @return array<string, mixed> */
     private function validatedData(Request $request, ?Pelanggan $customer = null): array
     {
-        return $request->validate([
-            'kode_pelanggan' => ['required', 'string', 'max:30', Rule::unique('pelanggan', 'kode_pelanggan')->ignore($customer)],
+        $rules = [
             'nama' => ['required', 'string', 'max:255'],
             'email' => ['nullable', 'email', 'max:255'],
-            'telepon' => ['nullable', 'string', 'max:30'],
+            'telepon' => [$customer ? 'nullable' : 'required', 'string', 'max:30'],
             'alamat' => ['nullable', 'string', 'max:5000'],
             'status' => ['required', Rule::in(['AKTIF', 'NONAKTIF'])],
+        ];
+
+        $phoneRule = Rule::unique('pelanggan', 'telepon');
+        if ($customer) {
+            $phoneRule->ignore($customer);
+            $rules['kode_pelanggan'] = ['required', 'string', 'max:30', Rule::unique('pelanggan', 'kode_pelanggan')->ignore($customer)];
+        }
+        $rules['telepon'][] = $phoneRule;
+
+        $data = $request->validate($rules, [
+            'telepon.required' => 'Nomor telepon wajib diisi untuk membuat akun pelanggan.',
+            'telepon.unique' => 'Nomor telepon sudah digunakan pelanggan lain.',
         ]);
+
+        if (! $customer) {
+            $data['kode_pelanggan'] = Pelanggan::generateCode();
+        }
+
+        return $data;
     }
 }

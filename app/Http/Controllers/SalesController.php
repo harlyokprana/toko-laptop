@@ -11,6 +11,7 @@ use App\Models\Penjualan;
 use App\Models\PenjualanDetail;
 use App\Models\Produk;
 use App\Services\CashLedgerService;
+use App\Services\BusinessNotificationService;
 use App\Services\StockService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -80,7 +81,7 @@ class SalesController extends Controller
         ]);
     }
 
-    public function store(Request $request, StockService $stock, CashLedgerService $cash): RedirectResponse
+    public function store(Request $request, StockService $stock, CashLedgerService $cash, BusinessNotificationService $notifications): RedirectResponse
     {
         $data = $request->validate([
             'pelanggan_id' => ['nullable', 'integer', 'exists:pelanggan,id'],
@@ -327,6 +328,17 @@ class SalesController extends Controller
             return $sale;
         });
 
+        if ($intent !== 'draft') {
+            $sale->loadMissing('pelanggan.user');
+            $notifications->notifyUsers(
+                [$sale->pelanggan?->user],
+                $request->user(),
+                'Transaksi penjualan tercatat',
+                "Transaksi {$sale->no_invoice} berhasil dicatat.",
+                route('sales.show', $sale, false),
+            );
+        }
+
         return redirect()->route('sales.show', $sale)->with('status', "Penjualan {$sale->no_invoice} berhasil disimpan.");
     }
 
@@ -343,7 +355,7 @@ class SalesController extends Controller
         return view('sales.show', compact('sale', 'payments'));
     }
 
-    public function collectPayment(Request $request, Penjualan $sale, CashLedgerService $cash): RedirectResponse
+    public function collectPayment(Request $request, Penjualan $sale, CashLedgerService $cash, BusinessNotificationService $notifications): RedirectResponse
     {
         $data = $request->validate([
             'nominal' => ['required', 'numeric', 'gt:0', 'decimal:0,2'],
@@ -375,6 +387,15 @@ class SalesController extends Controller
             ])->save();
             $this->recordPaymentAndIncome($sale, $amount, $data['metode'], $request, $cash);
         });
+
+        $sale->loadMissing('pelanggan.user');
+        $notifications->notifyUsers(
+            [$sale->pelanggan?->user],
+            $request->user(),
+            'Pembayaran penjualan tercatat',
+            "Pembayaran tagihan {$sale->no_invoice} berhasil dicatat.",
+            route('sales.show', $sale, false),
+        );
 
         return back()->with('status', 'Pembayaran tagihan berhasil dicatat.');
     }

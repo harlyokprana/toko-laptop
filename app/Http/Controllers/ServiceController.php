@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\KasirShift;
-use App\Models\Laptop;
 use App\Models\Pelanggan;
 use App\Models\Pembayaran;
 use App\Models\Pendapatan;
@@ -13,6 +12,7 @@ use App\Models\ServiceApproval;
 use App\Models\ServiceDetail;
 use App\Models\ServiceProgress;
 use App\Models\User;
+use App\Services\BusinessNotificationService;
 use App\Services\CashLedgerService;
 use App\Services\StockService;
 use Illuminate\Contracts\View\View;
@@ -36,6 +36,18 @@ class ServiceController extends Controller
         'SELESAI' => ['label' => 'Selesai', 'progress' => 100],
         'SUDAH_DIAMBIL' => ['label' => 'Sudah Diambil', 'progress' => 100],
         'BATAL' => ['label' => 'Batal', 'progress' => 0],
+    ];
+
+    private const STATUS_TRANSITIONS = [
+        'DITERIMA' => ['DIAGNOSA', 'BATAL'],
+        'DIAGNOSA' => ['DALAM_PERBAIKAN', 'BATAL'],
+        'MENUNGGU_PERSETUJUAN' => [],
+        'MENUNGGU_SPAREPART' => ['DALAM_PERBAIKAN', 'BATAL'],
+        'DALAM_PERBAIKAN' => ['TESTING', 'BATAL'],
+        'TESTING' => ['DALAM_PERBAIKAN', 'SELESAI', 'BATAL'],
+        'SELESAI' => [],
+        'SUDAH_DIAMBIL' => [],
+        'BATAL' => [],
     ];
 
     public function index(Request $request): View
@@ -108,7 +120,7 @@ class ServiceController extends Controller
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, BusinessNotificationService $notifications): RedirectResponse
     {
         $data = $request->validate([
             'pelanggan_id' => ['required', 'integer', 'exists:pelanggan,id'],
@@ -117,7 +129,7 @@ class ServiceController extends Controller
             'model' => ['nullable', 'string', 'max:150'],
             'serial_number' => ['nullable', 'string', 'max:100'],
             'keluhan' => ['required', 'string', 'max:5000'],
-            'teknisi_id' => ['nullable', 'integer', 'exists:users,id'],
+            'teknisi_id' => ['required', 'integer', 'exists:users,id'],
             'keterangan' => ['nullable', 'string', 'max:2000'],
         ]);
 
@@ -125,7 +137,7 @@ class ServiceController extends Controller
         if (! Pelanggan::query()->whereKey($data['pelanggan_id'])->where('status', 'AKTIF')->exists()) {
             throw ValidationException::withMessages(['pelanggan_id' => 'Pilih pelanggan yang aktif.']);
         }
-        if (! empty($data['teknisi_id']) && ! User::query()->whereKey($data['teknisi_id'])
+        if (! User::query()->whereKey($data['teknisi_id'])
             ->where('status', 'AKTIF')->whereHas('role', fn (Builder $role) => $role->where('name', 'TEKNISI'))->exists()) {
             throw ValidationException::withMessages(['teknisi_id' => 'Pilih teknisi aktif.']);
         }
@@ -140,7 +152,7 @@ class ServiceController extends Controller
                 'model' => $data['model'] ?? null,
                 'serial_number' => $data['serial_number'] ?? null,
                 'keluhan' => $data['keluhan'],
-                'teknisi_id' => $data['teknisi_id'] ?? null,
+                'teknisi_id' => $data['teknisi_id'],
                 'status' => 'DITERIMA',
                 'jasa' => 0,
                 'diskon' => 0,
@@ -157,7 +169,14 @@ class ServiceController extends Controller
             return $service;
         });
 
-        return redirect()->route('service.show', $service)->with('status', "Service {$service->no_service} berhasil diterima.");
+        $notifications->notifyServiceStakeholders(
+            $service,
+            $request->user(),
+            'Service baru diterima',
+            "Service {$service->no_service} telah diterima dan menunggu pemeriksaan.",
+        );
+
+        return redirect()->route('service.print', [$service, 'intake']);
     }
 
     public function show(Request $request, Service $service): View
@@ -174,11 +193,11 @@ class ServiceController extends Controller
             'approvals.approvedBy:id,name',
             'approvals.details.produk:id,kode_produk,nama_produk,harga_jual,stok',
         ]);
-        $payments = $user->role?->name === 'TEKNISI'
+        $canViewBilling = $user->role?->name !== 'TEKNISI' && $user->hasPermission('view_service');
+        $payments = ! $canViewBilling
             ? collect()
             : Pembayaran::query()->where('referensi_type', 'SERVICE')->where('referensi_id', $service->id)->orderBy('id')->get();
         $pendingApproval = $service->approvals->where('status', 'PENDING')->sortByDesc('id')->first();
-        $canViewBilling = $user->role?->name !== 'TEKNISI';
         $canUpdateProgress = $this->canUpdateProgress($user, $service);
         $canRequestApproval = $this->canRequestApproval($user, $service) && ! $pendingApproval;
         $canDecideApproval = $pendingApproval && $this->canDecideApproval($user, $service);
@@ -190,14 +209,49 @@ class ServiceController extends Controller
             'label' => $item['label'],
             'progress' => $item['progress'],
         ])->values();
+        $availableStatuses = array_merge(
+            [$service->status],
+            self::STATUS_TRANSITIONS[$service->status] ?? [],
+        );
 
         return view('service.show', compact(
             'service', 'payments', 'pendingApproval', 'canViewBilling', 'canUpdateProgress',
-            'canRequestApproval', 'canDecideApproval', 'products', 'statusProgress'
+            'canRequestApproval', 'canDecideApproval', 'products', 'statusProgress', 'availableStatuses'
         ));
     }
 
-    public function updateProgress(Request $request, Service $service, StockService $stock): RedirectResponse
+    public function printDocument(Request $request, Service $service, string $document): View
+    {
+        $this->assertCanView($request->user(), $service);
+        abort_unless(in_array($document, ['intake', 'final'], true), 404);
+        abort_if($document === 'final' && (
+            $request->user()->role?->name === 'TEKNISI' || ! $request->user()->hasPermission('view_service')
+        ), 403);
+        abort_if(
+            $document === 'final' && ! in_array($service->status, ['SELESAI', 'SUDAH_DIAMBIL'], true),
+            404,
+        );
+
+        $service->load([
+            'pelanggan:id,nama,telepon,alamat',
+            'teknisi:id,name',
+            'details.produk:id,nama_produk',
+        ]);
+        $payments = $document === 'final'
+            ? Pembayaran::query()
+                ->where('referensi_type', 'SERVICE')
+                ->where('referensi_id', $service->id)
+                ->where('status', 'LUNAS')
+                ->orderBy('tanggal')
+                ->orderBy('id')
+                ->get()
+            : collect();
+        $balance = max(0, (float) $service->total - (float) $service->dibayar);
+
+        return view('service.print', compact('service', 'document', 'payments', 'balance'));
+    }
+
+    public function updateProgress(Request $request, Service $service, StockService $stock, BusinessNotificationService $notifications): RedirectResponse
     {
         abort_unless($this->canUpdateProgress($request->user(), $service), 404);
         $data = $request->validate([
@@ -207,10 +261,24 @@ class ServiceController extends Controller
             'catatan' => ['required', 'string', 'max:5000'],
         ]);
 
+        $previousStatus = $service->status;
         DB::transaction(function () use ($service, $data, $request, $stock): void {
             $locked = Service::query()->lockForUpdate()->findOrFail($service->id);
+            if (in_array($locked->status, ['SELESAI', 'SUDAH_DIAMBIL', 'BATAL'], true)) {
+                throw ValidationException::withMessages(['status' => 'Service yang telah selesai atau dibatalkan tidak dapat diubah progress-nya.']);
+            }
             if ($locked->approvals()->where('status', 'PENDING')->exists()) {
                 throw ValidationException::withMessages(['status' => 'Selesaikan persetujuan biaya terlebih dahulu.']);
+            }
+            $allowedStatuses = array_merge(
+                [$locked->status],
+                self::STATUS_TRANSITIONS[$locked->status] ?? [],
+            );
+            if (! in_array($data['status'], $allowedStatuses, true)) {
+                throw ValidationException::withMessages(['status' => 'Perpindahan status service tidak sesuai alur pengerjaan.']);
+            }
+            if ($data['status'] === 'DIAGNOSA' && blank($data['diagnosa'] ?? $locked->diagnosa)) {
+                throw ValidationException::withMessages(['diagnosa' => 'Isi hasil pemeriksaan sebelum melanjutkan ke tahap diagnosa.']);
             }
             if ($data['status'] === 'MENUNGGU_PERSETUJUAN') {
                 throw ValidationException::withMessages(['status' => 'Gunakan form pengajuan estimasi agar persetujuan memiliki rincian biaya.']);
@@ -251,10 +319,19 @@ class ServiceController extends Controller
             $this->recordProgress($locked, $data['status'], $progress, $data['catatan'], $request->user()->id);
         });
 
+        if ($previousStatus !== $data['status']) {
+            $notifications->notifyServiceStakeholders(
+                $service,
+                $request->user(),
+                'Progress service diperbarui',
+                "Service {$service->no_service} sekarang berstatus ".str_replace('_', ' ', strtolower($data['status'])).'.',
+            );
+        }
+
         return back()->with('status', 'Progress service berhasil diperbarui.');
     }
 
-    public function requestApproval(Request $request, Service $service): RedirectResponse
+    public function requestApproval(Request $request, Service $service, BusinessNotificationService $notifications): RedirectResponse
     {
         abort_unless($this->canRequestApproval($request->user(), $service), 403);
         $data = $request->validate([
@@ -361,16 +438,24 @@ class ServiceController extends Controller
             $this->recordProgress($locked, 'MENUNGGU_PERSETUJUAN', 30, $data['catatan'], $request->user()->id);
         });
 
+        $notifications->notifyServiceStakeholders(
+            $service,
+            $request->user(),
+            'Persetujuan estimasi diperlukan',
+            "Estimasi biaya service {$service->no_service} menunggu persetujuan pelanggan.",
+        );
+
         return back()->with('status', 'Estimasi biaya dikirim untuk persetujuan. Stok sparepart belum dipotong.');
     }
 
-    public function decideApproval(Request $request, Service $service, ServiceApproval $approval, StockService $stock): RedirectResponse
+    public function decideApproval(Request $request, Service $service, ServiceApproval $approval, StockService $stock, BusinessNotificationService $notifications): RedirectResponse
     {
         abort_unless((int) $approval->service_id === (int) $service->id, 404);
         abort_unless($this->canDecideApproval($request->user(), $service), 404);
+        $staffDecision = $request->user()->role?->name !== 'PELANGGAN';
         $data = $request->validate([
             'decision' => ['required', Rule::in(['APPROVED', 'REJECTED'])],
-            'catatan' => ['nullable', 'string', 'max:2000'],
+            'catatan' => [$staffDecision ? 'required' : 'nullable', 'string', 'max:2000'],
         ]);
 
         DB::transaction(function () use ($service, $approval, $data, $request, $stock): void {
@@ -378,6 +463,9 @@ class ServiceController extends Controller
             $lockedApproval = ServiceApproval::query()->where('service_id', $locked->id)->lockForUpdate()->findOrFail($approval->id);
             if ($lockedApproval->status !== 'PENDING') {
                 throw ValidationException::withMessages(['decision' => 'Pengajuan ini sudah diputuskan.']);
+            }
+            if ($locked->status !== 'MENUNGGU_PERSETUJUAN') {
+                throw ValidationException::withMessages(['decision' => 'Service tidak lagi menunggu keputusan estimasi.']);
             }
 
             $note = trim((string) $lockedApproval->catatan);
@@ -437,12 +525,58 @@ class ServiceController extends Controller
             }
         });
 
+        $notifications->notifyUsers(
+            [$service->teknisi, User::query()->find($approval->requested_by)],
+            $request->user(),
+            'Keputusan estimasi service',
+            "Estimasi untuk service {$service->no_service} telah ".($data['decision'] === 'APPROVED' ? 'disetujui' : 'ditolak').'.',
+            route('service.show', $service, false),
+        );
+
         return back()->with('status', $data['decision'] === 'APPROVED'
             ? 'Estimasi disetujui dan tercatat pada service.'
             : 'Estimasi ditolak. Service kembali ke status sebelumnya.');
     }
 
-    public function collectPayment(Request $request, Service $service, CashLedgerService $cash): RedirectResponse
+    public function handover(Request $request, Service $service, BusinessNotificationService $notifications): RedirectResponse
+    {
+        abort_unless(
+            $request->user()->role?->name === 'KASIR' || $request->user()->hasPermission('edit_service'),
+            403,
+        );
+        $data = $request->validate([
+            'nama_penerima' => ['required', 'string', 'max:255'],
+            'catatan' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        DB::transaction(function () use ($service, $data, $request): void {
+            $locked = Service::query()->lockForUpdate()->findOrFail($service->id);
+            if ($locked->status !== 'SELESAI') {
+                throw ValidationException::withMessages(['handover' => 'Perangkat hanya dapat diserahkan setelah service selesai.']);
+            }
+            if ((float) $locked->dibayar < (float) $locked->total) {
+                throw ValidationException::withMessages(['handover' => 'Lunasi tagihan service sebelum perangkat diserahkan.']);
+            }
+
+            $locked->forceFill(['status' => 'SUDAH_DIAMBIL'])->save();
+            $note = 'Perangkat diserahkan kepada '.$data['nama_penerima'].'.';
+            if (filled($data['catatan'] ?? null)) {
+                $note .= ' '.$data['catatan'];
+            }
+            $this->recordProgress($locked, 'SUDAH_DIAMBIL', 100, $note, $request->user()->id);
+        });
+
+        $notifications->notifyServiceStakeholders(
+            $service,
+            $request->user(),
+            'Perangkat service telah diserahkan',
+            "Perangkat untuk service {$service->no_service} telah diserahkan kepada {$data['nama_penerima']}.",
+        );
+
+        return back()->with('status', 'Serah-terima perangkat berhasil dicatat.');
+    }
+
+    public function collectPayment(Request $request, Service $service, CashLedgerService $cash, BusinessNotificationService $notifications): RedirectResponse
     {
         abort_if($request->user()->role?->name === 'TEKNISI', 403);
         $data = $request->validate([
@@ -498,6 +632,15 @@ class ServiceController extends Controller
             $this->syncPendingReceivable($locked, $request->user()->id);
         });
 
+        $service->loadMissing('pelanggan.user');
+        $notifications->notifyUsers(
+            [$service->pelanggan?->user],
+            $request->user(),
+            'Pembayaran service tercatat',
+            "Pembayaran untuk service {$service->no_service} telah tercatat.",
+            route('service.show', $service, false),
+        );
+
         return back()->with('status', 'Pembayaran service berhasil dicatat.');
     }
 
@@ -525,6 +668,10 @@ class ServiceController extends Controller
 
     private function canUpdateProgress(User $user, Service $service): bool
     {
+        if (in_array($service->status, ['SELESAI', 'SUDAH_DIAMBIL', 'BATAL'], true)) {
+            return false;
+        }
+
         if ($user->hasPermission('edit_service')) {
             return $user->role?->name !== 'TEKNISI' || (int) $service->teknisi_id === (int) $user->id;
         }
@@ -535,6 +682,11 @@ class ServiceController extends Controller
 
     private function canRequestApproval(User $user, Service $service): bool
     {
+        if (! in_array($service->status, ['DIAGNOSA', 'MENUNGGU_SPAREPART', 'DALAM_PERBAIKAN', 'TESTING'], true)
+            || blank($service->diagnosa)) {
+            return false;
+        }
+
         if ($user->role?->name === 'TEKNISI') {
             return $user->hasPermission('update_service_progress') && (int) $service->teknisi_id === (int) $user->id;
         }
@@ -613,6 +765,7 @@ class ServiceController extends Controller
 
         if ($receivable) {
             $receivable->forceFill(['nominal' => $outstanding])->save();
+
             return;
         }
 

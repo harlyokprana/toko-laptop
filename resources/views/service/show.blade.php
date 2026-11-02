@@ -13,7 +13,13 @@
 
     <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div><a href="{{ route('module.service') }}" class="text-xs font-semibold text-blue-700">← Daftar Service</a><div class="mt-2 flex flex-wrap items-center gap-2"><h1 class="text-2xl font-bold text-slate-950">{{ $service->no_service }}</h1><span class="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-800">{{ $statusLabels->get($service->status)['label'] ?? str_replace('_', ' ', $service->status) }}</span></div><p class="mt-1 text-xs text-slate-500">Diterima {{ $service->tanggal_masuk->format('d M Y H:i') }}@if($service->tanggal_selesai) · Selesai {{ $service->tanggal_selesai->format('d M Y H:i') }}@endif</p></div>
-        @if(auth()->user()->hasPermission('create_service') && auth()->user()->role?->name !== 'PELANGGAN')<a href="{{ route('service.create') }}" class="rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white">＋ Terima Service</a>@endif
+        <div class="flex flex-wrap gap-2">
+            <a href="{{ route('service.print', [$service, 'intake']) }}" class="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700">Cetak Tanda Terima</a>
+            @if(in_array($service->status, ['SELESAI', 'SUDAH_DIAMBIL'], true) && $canViewBilling)
+                <a href="{{ route('service.print', [$service, 'final']) }}" class="rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white">{{ $balance <= 0 ? 'Cetak Kwitansi' : 'Cetak Tagihan' }}</a>
+            @endif
+            @if(auth()->user()->hasPermission('create_service') && auth()->user()->role?->name !== 'PELANGGAN')<a href="{{ route('service.create') }}" class="rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white">＋ Terima Service</a>@endif
+        </div>
     </div>
     @if(session('status'))<div class="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ session('status') }}</div>@endif
     @if($errors->any())<div class="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{{ $errors->first() }}</div>@endif
@@ -30,7 +36,7 @@
 
             @if($canUpdateProgress)
                 <section class="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm"><h2 class="font-bold text-slate-900">Update Progress & Diagnosa</h2><form method="POST" action="{{ route('service.progress.store', $service) }}" class="mt-4 grid gap-3 sm:grid-cols-2">@csrf
-                    <label class="text-xs font-medium text-slate-600">Status<select name="status" required class="mt-1 block w-full rounded-lg border-slate-300 text-sm">@foreach($statusProgress as $step)@if(!in_array($step['status'], ['MENUNGGU_PERSETUJUAN'], true))<option value="{{ $step['status'] }}" @selected($service->status === $step['status'])>{{ $step['label'] }}</option>@endif @endforeach</select></label>
+                    <label class="text-xs font-medium text-slate-600">Status<select name="status" required class="mt-1 block w-full rounded-lg border-slate-300 text-sm">@foreach($statusProgress as $step)@if(in_array($step['status'], $availableStatuses, true))<option value="{{ $step['status'] }}" @selected($service->status === $step['status'])>{{ $step['label'] }}</option>@endif @endforeach</select></label>
                     <label class="text-xs font-medium text-slate-600">Progress (%)<input type="number" name="progress_percent" min="0" max="100" value="{{ old('progress_percent', $currentProgress) }}" class="mt-1 block w-full rounded-lg border-slate-300 text-sm"></label>
                     <label class="text-xs font-medium text-slate-600 sm:col-span-2">Diagnosa<textarea name="diagnosa" rows="2" class="mt-1 block w-full rounded-lg border-slate-300 text-sm" placeholder="Hasil pemeriksaan teknisi">{{ old('diagnosa', $service->diagnosa) }}</textarea></label>
                     <label class="text-xs font-medium text-slate-600 sm:col-span-2">Catatan progress <span class="text-rose-600">*</span><textarea name="catatan" required rows="2" class="mt-1 block w-full rounded-lg border-slate-300 text-sm" placeholder="Tuliskan aktivitas yang dilakukan">{{ old('catatan') }}</textarea></label>
@@ -58,7 +64,7 @@
             @if($pendingApproval)
                 <section class="rounded-2xl border border-amber-200 bg-amber-50 p-5"><div class="flex flex-wrap items-start justify-between gap-2"><div><p class="text-xs font-semibold uppercase tracking-wide text-amber-800">Menunggu Persetujuan</p><h2 class="mt-1 text-lg font-bold text-slate-900">Estimasi {{ $money($pendingApproval->estimasi) }}</h2></div><span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">Stok belum dipotong</span></div><p class="mt-2 whitespace-pre-line text-sm text-slate-700">{{ $pendingApproval->catatan }}</p><p class="mt-2 text-xs text-slate-500">Diajukan {{ $pendingApproval->requestedBy?->name ?? 'Petugas' }} · {{ $pendingApproval->created_at->format('d M Y H:i') }}</p>
                     @if($pendingApproval->details->isNotEmpty())<ul class="mt-3 space-y-1 text-sm text-slate-700">@foreach($pendingApproval->details as $detail)<li>{{ $detail->qty }} × {{ $detail->produk?->nama_produk }} @if($canViewBilling) — {{ $money($detail->subtotal) }}@endif</li>@endforeach</ul>@endif
-                    @if($canDecideApproval)<form method="POST" action="{{ route('service.approvals.decision', [$service, $pendingApproval]) }}" class="mt-4 space-y-3">@csrf<label class="block text-xs font-medium text-slate-600">Catatan keputusan (opsional)<input name="catatan" maxlength="2000" class="mt-1 block w-full rounded-lg border-slate-300 text-sm" placeholder="Misalnya pelanggan menyetujui via telepon"></label><div class="flex flex-wrap gap-2"><button name="decision" value="APPROVED" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">Setujui Estimasi</button><button name="decision" value="REJECTED" class="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white">Tolak Estimasi</button></div></form>@endif
+                    @if($canDecideApproval)<form method="POST" action="{{ route('service.approvals.decision', [$service, $pendingApproval]) }}" class="mt-4 space-y-3">@csrf<label class="block text-xs font-medium text-slate-600">{{ auth()->user()->role?->name === 'PELANGGAN' ? 'Catatan keputusan (opsional)' : 'Bukti konfirmasi pelanggan / alasan keputusan (wajib)' }}<textarea name="catatan" maxlength="2000" rows="2" @required(auth()->user()->role?->name !== 'PELANGGAN') class="mt-1 block w-full rounded-lg border-slate-300 text-sm" placeholder="{{ auth()->user()->role?->name === 'PELANGGAN' ? 'Catatan persetujuan atau alasan penolakan' : 'Contoh: pelanggan menyetujui melalui telepon setelah estimasi dijelaskan' }}"></textarea></label><div class="flex flex-wrap gap-2"><button name="decision" value="APPROVED" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">Setujui Estimasi</button><button name="decision" value="REJECTED" class="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white">Tolak Estimasi</button></div></form>@endif
                 </section>
             @endif
 
@@ -66,6 +72,17 @@
         </div>
 
         <aside class="space-y-4">
+            @if($service->status === 'SELESAI' && $balance <= 0 && (auth()->user()->role?->name === 'KASIR' || auth()->user()->hasPermission('edit_service')))
+                <section class="rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm">
+                    <h2 class="font-bold text-slate-900">Serah-terima perangkat</h2>
+                    <p class="mt-1 text-xs text-slate-500">Pastikan tagihan lunas dan catat nama orang yang menerima perangkat.</p>
+                    <form method="POST" action="{{ route('service.handover.store', $service) }}" class="mt-4 space-y-3">@csrf
+                        <label class="block text-xs font-medium text-slate-600">Nama penerima <span class="text-rose-600">*</span><input name="nama_penerima" required maxlength="255" class="mt-1 block w-full rounded-lg border-slate-300 text-sm"></label>
+                        <label class="block text-xs font-medium text-slate-600">Catatan<input name="catatan" maxlength="1000" class="mt-1 block w-full rounded-lg border-slate-300 text-sm"></label>
+                        <button class="w-full rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white">Catat serah-terima</button>
+                    </form>
+                </section>
+            @endif
             @if($canViewBilling)
                 <section class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 class="font-bold text-slate-900">Ringkasan Biaya</h2><div class="mt-4 space-y-2 text-sm"><div class="flex justify-between text-slate-600"><span>Jasa + sparepart</span><span>{{ $money($subtotal) }}</span></div><div class="flex justify-between text-slate-600"><span>Diskon</span><span>− {{ $money($service->diskon) }}</span></div><div class="flex justify-between text-slate-600"><span>Pajak ({{ number_format((float) $service->pajak_persen, 2, ',', '.') }}%)</span><span>{{ $money($service->pajak) }}</span></div><div class="flex justify-between text-slate-600"><span>Biaya tambahan</span><span>{{ $money($service->biaya_tambahan) }}</span></div><div class="flex justify-between border-t border-slate-100 pt-3 font-bold text-blue-800"><span>Total</span><span>{{ $money($service->total) }}</span></div><div class="flex justify-between text-emerald-700"><span>Dibayar</span><span>{{ $money($service->dibayar) }}</span></div><div class="flex justify-between font-semibold text-amber-800"><span>Sisa tagihan</span><span>{{ $money($balance) }}</span></div></div></section>
                 @if($canDecideApproval && auth()->user()->role?->name === 'PELANGGAN' && $service->approvals->where('status', 'APPROVED')->isNotEmpty())<p class="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">Persetujuan Anda telah tercatat. Hubungi petugas untuk informasi pembayaran atau pengambilan perangkat.</p>@endif

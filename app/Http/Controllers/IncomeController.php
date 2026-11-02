@@ -8,28 +8,30 @@ use App\Models\Pendapatan;
 use App\Services\CashLedgerService;
 use App\Support\CsvSanitizer;
 use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class IncomeController extends Controller
 {
-    public function index(Request $request): View|\Symfony\Component\HttpFoundation\StreamedResponse
+    public function index(Request $request): View|StreamedResponse
     {
         $filters = $request->validate([
             'date_from' => ['nullable', 'date'], 'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
-            'jenis' => ['nullable', Rule::in(['SERVICE', 'PENJUALAN_AKSESORIS', 'PRINTING', 'SEWA', 'PENJUALAN_LAPTOP', 'LAINNYA', 'PENAMBAHAN_KAS', 'PENYESUAIAN_KAS'])],
+            'jenis' => ['nullable', Rule::in(['SERVICE', 'PENJUALAN_AKSESORIS', 'PRINTING', 'SEWA', 'PENJUALAN_LAPTOP', 'LAINNYA'])],
             'q' => ['nullable', 'string', 'max:150'], 'export' => ['nullable', Rule::in(['csv'])],
         ]);
-        $query = Pendapatan::query()->with('user:id,name')->latest('tanggal')->latest('id');
+        $query = Pendapatan::query()->forProfitLoss()->with('user:id,name')->latest('tanggal')->latest('id');
         $this->applyFilters($query, $filters);
 
         if (($filters['export'] ?? null) === 'csv') {
             $rows = (clone $query)->get();
+
             return response()->streamDownload(function () use ($rows): void {
                 $output = fopen('php://output', 'w');
                 fputcsv($output, ['Tanggal', 'Kode', 'Jenis', 'Sumber', 'Keterangan', 'Nominal', 'User']);
@@ -91,9 +93,15 @@ class IncomeController extends Controller
 
     private function applyFilters(Builder $query, array $filters): void
     {
-        if (! empty($filters['date_from'])) $query->whereDate('tanggal', '>=', $filters['date_from']);
-        if (! empty($filters['date_to'])) $query->whereDate('tanggal', '<=', $filters['date_to']);
-        if (! empty($filters['jenis'])) $query->where('jenis_pendapatan', $filters['jenis']);
+        if (! empty($filters['date_from'])) {
+            $query->whereDate('tanggal', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $query->whereDate('tanggal', '<=', $filters['date_to']);
+        }
+        if (! empty($filters['jenis'])) {
+            $query->where('jenis_pendapatan', $filters['jenis']);
+        }
         if ($search = trim((string) ($filters['q'] ?? ''))) {
             $query->where(fn (Builder $builder) => $builder->where('kode_pendapatan', 'like', "%{$search}%")
                 ->orWhere('sumber', 'like', "%{$search}%")->orWhere('keterangan', 'like', "%{$search}%"));

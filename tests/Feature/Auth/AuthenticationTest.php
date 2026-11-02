@@ -2,9 +2,9 @@
 
 namespace Tests\Feature\Auth;
 
-use App\Models\User;
 use App\Models\Permission;
 use App\Models\Role;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -16,7 +16,12 @@ class AuthenticationTest extends TestCase
     {
         $response = $this->get('/login');
 
-        $response->assertStatus(200);
+        $response->assertStatus(200)
+            ->assertSee('Prime.Com')
+            ->assertSee('SOLUSI TEKNOLOGI ANDA')
+            ->assertSee('Masuk ke dashboard')
+            ->assertSee('name="email"', false)
+            ->assertSee('name="password"', false);
     }
 
     public function test_users_can_authenticate_using_the_login_screen(): void
@@ -30,6 +35,26 @@ class AuthenticationTest extends TestCase
 
         $this->assertAuthenticated();
         $response->assertRedirect(route('dashboard', absolute: false));
+    }
+
+    public function test_customer_can_login_with_phone_and_access_service_portal(): void
+    {
+        $role = Role::create(['name' => 'PELANGGAN']);
+        foreach (['view_dashboard', 'view_service'] as $permissionName) {
+            $role->permissions()->attach(Permission::create(['name' => $permissionName]));
+        }
+        $user = User::factory()->create([
+            'phone' => '081234567890',
+            'role_id' => $role->id,
+        ]);
+
+        $this->post('/login', [
+            'email' => '081234567890',
+            'password' => 'password',
+        ])->assertRedirect(route('dashboard', absolute: false));
+
+        $this->assertAuthenticatedAs($user);
+        $this->get(route('module.service'))->assertOk();
     }
 
     public function test_users_can_not_authenticate_with_invalid_password(): void

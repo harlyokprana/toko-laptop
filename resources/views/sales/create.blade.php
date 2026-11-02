@@ -413,14 +413,21 @@
             var nama = modal.querySelector('#qc-nama').value.trim();
             var telepon = modal.querySelector('#qc-telepon').value.trim();
             var email = modal.querySelector('#qc-email').value.trim();
-            if(!nama){ alert('Nama pelanggan wajib diisi.'); return; }
+            if(!nama || !telepon){ alert('Nama dan nomor telepon pelanggan wajib diisi.'); return; }
             var res = await fetch("{{ route('customers.quick-store') }}", {
                 method:'POST',
                 headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrfToken(), 'Accept':'application/json' },
                 body: JSON.stringify({ nama: nama, telepon: telepon, email: email })
             });
-            if(!res.ok){ var t=await res.text(); alert('Gagal menambah pelanggan: '+t); return; }
-            var c = await res.json();
+            var responseText = await res.text();
+            var c;
+            try { c = JSON.parse(responseText); }
+            catch { alert('Server mengembalikan respons tidak valid (HTTP '+res.status+').'); return; }
+            if(!res.ok){
+                var message = c.errors ? Object.values(c.errors).flat()[0] : (c.message || 'Pelanggan tidak dapat disimpan.');
+                alert(message);
+                return;
+            }
             var options = document.getElementById('customer-options');
             if(options){
                 var opt = document.createElement('div');
@@ -496,7 +503,7 @@
             </div>
             <div class="grid gap-3">
                 <label class="text-sm font-medium text-slate-700">Nama Lengkap<input id="qc-nama" maxlength="255" class="mt-1.5 block w-full rounded-lg border-slate-300 text-sm"></label>
-                <label class="text-sm font-medium text-slate-700">Telepon<input id="qc-telepon" maxlength="30" class="mt-1.5 block w-full rounded-lg border-slate-300 text-sm"></label>
+                <label class="text-sm font-medium text-slate-700">Telepon <span class="text-rose-600">*</span><input id="qc-telepon" maxlength="30" required class="mt-1.5 block w-full rounded-lg border-slate-300 text-sm"></label>
                 <label class="text-sm font-medium text-slate-700">Email<input type="email" id="qc-email" maxlength="255" class="mt-1.5 block w-full rounded-lg border-slate-300 text-sm"></label>
             </div>
             <div class="mt-5 flex justify-end gap-2">

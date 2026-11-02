@@ -1,47 +1,47 @@
 <x-guest-layout>
-    <!-- Session Status -->
-    <x-auth-session-status class="mb-4" :status="session('status')" />
+<div class="auth-login-content">
+    <div class="auth-login-heading">
+        <span class="auth-login-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5 19 7v5.1c0 4.1-2.8 7.1-7 8.4-4.2-1.3-7-4.3-7-8.4V7l7-3.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <p class="auth-login-kicker">SELAMAT DATANG KEMBALI</p>
+        <h1>Masuk ke Prime<span>.</span>Com</h1>
+        <p class="auth-login-description">Masuk untuk melanjutkan aktivitas toko Anda.</p>
+    </div>
 
-    <form method="POST" action="{{ route('login') }}">
+    <x-auth-session-status class="auth-login-status" :status="session('status')" />
+
+    <form method="POST" action="{{ route('login') }}" class="auth-login-form">
         @csrf
 
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" class="block mt-1 w-full" type="email" name="email" :value="old('email')" required autofocus autocomplete="username" />
-            <x-input-error :messages="$errors->get('email')" class="mt-2" />
+        <div class="auth-field">
+            <label for="email">Email atau nomor telepon</label>
+            <input id="email" type="text" name="email" value="{{ old('email') }}" required autofocus autocomplete="username" placeholder="Email atau nomor telepon">
+            <x-input-error :messages="$errors->get('email')" class="auth-field-error" />
         </div>
 
-        <!-- Password -->
-        <div class="mt-4">
-            <x-input-label for="password" :value="__('Password')" />
-
-            <x-text-input id="password" class="block mt-1 w-full"
-                            type="password"
-                            name="password"
-                            required autocomplete="current-password" />
-
-            <x-input-error :messages="$errors->get('password')" class="mt-2" />
+        <div class="auth-field">
+            <div class="auth-password-label">
+                <label for="password">Kata sandi</label>
+                @if (Route::has('password.request'))
+                    <a href="{{ route('password.request') }}">Lupa kata sandi?</a>
+                @endif
+            </div>
+            <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="Masukkan kata sandi">
+            <x-input-error :messages="$errors->get('password')" class="auth-field-error" />
         </div>
 
-        <!-- Remember Me -->
-        <div class="block mt-4">
-            <label for="remember_me" class="inline-flex items-center">
-                <input id="remember_me" type="checkbox" class="rounded border-gray-300 text-indigo-600 shadow-sm focus:ring-indigo-500" name="remember">
-                <span class="ms-2 text-sm text-gray-600">{{ __('Remember me') }}</span>
-            </label>
-        </div>
+        <label for="remember_me" class="auth-remember">
+            <input id="remember_me" type="checkbox" name="remember">
+            <span>Ingat saya di perangkat ini</span>
+        </label>
 
-        <div class="flex items-center justify-end mt-4">
-            @if (Route::has('password.request'))
-                <a class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" href="{{ route('password.request') }}">
-                    {{ __('Forgot your password?') }}
-                </a>
-            @endif
-
-            <x-primary-button class="ms-3">
-                {{ __('Log in') }}
-            </x-primary-button>
-        </div>
+        <button type="submit" class="auth-submit">
+            <span>Masuk ke dashboard</span>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
     </form>
+
+    <div class="auth-login-note"><span class="auth-note-lock" aria-hidden="true">⌑</span><span>Akses aman untuk tim Prime.Com</span></div>
+</div>
 </x-guest-layout>

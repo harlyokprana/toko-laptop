@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Pendapatan;
+use App\Models\Pengeluaran;
 use App\Support\CsvSanitizer;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Query\Builder;
@@ -26,7 +28,7 @@ class ReportController extends Controller
         'service' => ['Service', 'Daftar penerimaan perangkat dan posisi tagihannya.', 'Service'],
         'service-teknisi' => ['Service per Teknisi', 'Jumlah pekerjaan dan nilai service per teknisi.', 'Service'],
         'service-status' => ['Service per Status', 'Jumlah dan nilai service pada setiap status.', 'Service'],
-        'stok' => ['Stok Produk', 'Snapshot stok saat ini dan estimasi nilai persediaan.', 'Persediaan'],
+        'stok' => ['Inventori & Nilai Stok', 'Daftar seluruh produk, jumlah stok, dan nilai persediaan berdasarkan stok × HPP.', 'Persediaan'],
         'mutasi-stok' => ['Mutasi Stok', 'Pergerakan stok masuk dan keluar berdasarkan tanggal.', 'Persediaan'],
         'pendapatan' => ['Pendapatan', 'Catatan penerimaan per jenis dan referensi.', 'Keuangan'],
         'pengeluaran' => ['Pengeluaran', 'Beban transaksi dan operasional yang tercatat.', 'Keuangan'],
@@ -247,9 +249,22 @@ class ReportController extends Controller
             case 'stok':
                 $query = DB::table('produk as p')->join('kategori as k', 'k.id', '=', 'p.kategori_id')->select('p.kode_produk', 'p.nama_produk', 'p.merek', 'k.nama as kategori', 'p.stok', 'p.stok_minimum', 'p.harga_beli', DB::raw('(p.stok * p.harga_beli) as nilai_persediaan'))
                     ->orderByRaw('CASE WHEN p.stok <= p.stok_minimum THEN 0 ELSE 1 END')->orderBy('p.nama_produk');
-                $search($query, ['p.kode_produk', 'p.nama_produk', 'p.merek', 'k.nama']);
+                $stockSearchColumns = ['p.kode_produk', 'p.nama_produk', 'p.merek', 'k.nama'];
+                $search($query, $stockSearchColumns);
+                $summaryQuery = DB::table('produk as p')->join('kategori as k', 'k.id', '=', 'p.kategori_id');
+                $search($summaryQuery, $stockSearchColumns);
+                $summary = $summaryQuery->selectRaw('COUNT(*) as products, COALESCE(SUM(p.stok), 0) as total_stock, COALESCE(SUM(p.stok * p.harga_beli), 0) as inventory_value, COALESCE(SUM(CASE WHEN p.stok <= p.stok_minimum THEN 1 ELSE 0 END), 0) as low_stock')->first();
 
-                return ['query' => $query, 'columns' => ['kode_produk' => 'Kode', 'nama_produk' => 'Produk', 'merek' => 'Merek', 'kategori' => 'Kategori', 'stok' => 'Stok', 'stok_minimum' => 'Minimum', 'harga_beli' => 'HPP/unit', 'nilai_persediaan' => 'Nilai Persediaan'], 'stats' => [['label' => 'Catatan', 'value' => 'Snapshot saat ini', 'detail' => 'Filter tanggal tidak mengubah snapshot stok.']]];
+                return [
+                    'query' => $query,
+                    'columns' => ['kode_produk' => 'Kode', 'nama_produk' => 'Produk', 'merek' => 'Merek', 'kategori' => 'Kategori', 'stok' => 'Stok', 'stok_minimum' => 'Minimum', 'harga_beli' => 'HPP/unit', 'nilai_persediaan' => 'Nilai Persediaan'],
+                    'stats' => [
+                        ['label' => 'Produk terdaftar', 'value' => number_format((int) $summary->products, 0, ',', '.'), 'detail' => 'Seluruh produk sesuai filter pencarian'],
+                        ['label' => 'Total unit stok', 'value' => number_format((float) $summary->total_stock, 0, ',', '.'), 'detail' => 'Jumlah stok dari seluruh produk'],
+                        ['label' => 'Stok menipis', 'value' => number_format((int) $summary->low_stock, 0, ',', '.'), 'detail' => 'Stok di bawah atau sama dengan minimum'],
+                        ['label' => 'Nilai inventori', 'value' => $this->money((float) $summary->inventory_value), 'detail' => 'Total stok × HPP; tidak berubah oleh filter tanggal'],
+                    ],
+                ];
 
             case 'mutasi-stok':
                 $query = DB::table('stok_mutasi as m')->join('produk as p', 'p.id', '=', 'm.produk_id')->leftJoin('users as u', 'u.id', '=', 'm.user_id')
@@ -260,14 +275,14 @@ class ReportController extends Controller
                 return ['query' => $query, 'columns' => ['tanggal' => 'Tanggal', 'kode_produk' => 'Kode', 'nama_produk' => 'Produk', 'jenis' => 'Jenis', 'referensi_type' => 'Referensi', 'referensi_id' => 'ID Ref', 'qty_masuk' => 'Masuk', 'qty_keluar' => 'Keluar', 'stok_saldo' => 'Saldo Stok', 'hpp' => 'HPP', 'keterangan' => 'Keterangan', 'user' => 'User']];
 
             case 'pendapatan':
-                $query = DB::table('pendapatan as p')->leftJoin('users as u', 'u.id', '=', 'p.user_id')->select('p.tanggal', 'p.kode_pendapatan', 'p.jenis_pendapatan as jenis', 'p.sumber', 'p.referensi_type', 'p.referensi_id', 'p.nominal', 'p.keterangan', 'u.name as user')->orderByDesc('p.tanggal')->orderByDesc('p.id');
+                $query = DB::table('pendapatan as p')->leftJoin('users as u', 'u.id', '=', 'p.user_id')->whereNotIn('p.jenis_pendapatan', Pendapatan::NON_REVENUE_TYPES)->select('p.tanggal', 'p.kode_pendapatan', 'p.jenis_pendapatan as jenis', 'p.sumber', 'p.referensi_type', 'p.referensi_id', 'p.nominal', 'p.keterangan', 'u.name as user')->orderByDesc('p.tanggal')->orderByDesc('p.id');
                 $date($query, 'p.tanggal');
                 $search($query, ['p.kode_pendapatan', 'p.jenis_pendapatan', 'p.sumber', 'p.keterangan', 'p.referensi_type']);
 
                 return ['query' => $query, 'columns' => ['tanggal' => 'Tanggal', 'kode_pendapatan' => 'Kode', 'jenis' => 'Jenis', 'sumber' => 'Sumber', 'referensi_type' => 'Referensi', 'referensi_id' => 'ID Ref', 'nominal' => 'Nominal', 'keterangan' => 'Keterangan', 'user' => 'User']];
 
             case 'pengeluaran':
-                $query = DB::table('pengeluaran as e')->leftJoin('users as u', 'u.id', '=', 'e.user_id')->select('e.tanggal', 'e.kode_beban', 'e.kategori_beban as kategori', 'e.keterangan', 'e.nominal', 'e.metode_bayar', 'e.referensi_type', 'e.referensi_id', 'u.name as user')->orderByDesc('e.tanggal')->orderByDesc('e.id');
+                $query = DB::table('pengeluaran as e')->leftJoin('users as u', 'u.id', '=', 'e.user_id')->whereNotIn('e.kategori_beban', Pengeluaran::CASH_BALANCE_CATEGORIES)->select('e.tanggal', 'e.kode_beban', 'e.kategori_beban as kategori', 'e.keterangan', 'e.nominal', 'e.metode_bayar', 'e.referensi_type', 'e.referensi_id', 'u.name as user')->orderByDesc('e.tanggal')->orderByDesc('e.id');
                 $date($query, 'e.tanggal');
                 $search($query, ['e.kode_beban', 'e.kategori_beban', 'e.keterangan', 'e.metode_bayar', 'u.name']);
 
@@ -336,7 +351,10 @@ class ReportController extends Controller
         $serviceIds = (clone $services)->select('s.id');
         $serviceCogs = (float) DB::table('service_detail as d')->whereIn('d.service_id', $serviceIds)->whereNotNull('d.stock_deducted_at')->sum(DB::raw('d.hpp * d.qty'));
 
-        $otherIncomeQuery = DB::table('pendapatan as p')->whereNotIn('p.jenis_pendapatan', ['SERVICE', 'PENJUALAN_AKSESORIS', 'PENJUALAN_LAPTOP'])
+        $otherIncomeQuery = DB::table('pendapatan as p')->whereNotIn('p.jenis_pendapatan', [
+            ...['SERVICE', 'PENJUALAN_AKSESORIS', 'PENJUALAN_LAPTOP'],
+            ...Pendapatan::NON_REVENUE_TYPES,
+        ])
             ->where(function ($query) {
                 $query->whereNull('p.referensi_type')->orWhereNotIn('p.referensi_type', ['PENJUALAN', 'SERVICE']);
             });
@@ -346,7 +364,7 @@ class ReportController extends Controller
         }
         $otherIncome = (float) (clone $otherIncomeQuery)->sum('p.nominal');
 
-        $expenseQuery = DB::table('pengeluaran as e')->whereNotIn('e.kategori_beban', ['PEMBELIAN_INVENTARIS']);
+        $expenseQuery = DB::table('pengeluaran as e')->whereNotIn('e.kategori_beban', Pengeluaran::NON_PROFIT_LOSS_CATEGORIES);
         $this->applyDate($expenseQuery, 'e.tanggal', $filters);
         if (! empty($filters['q'])) {
             $this->applySearch($expenseQuery, ['e.kode_beban', 'e.kategori_beban', 'e.keterangan'], $filters['q']);

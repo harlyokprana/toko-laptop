@@ -13,6 +13,7 @@ use App\Models\Supplier;
 use App\Models\KasirShift;
 use App\Services\StockService;
 use App\Services\CashLedgerService;
+use App\Services\BusinessNotificationService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -104,7 +105,7 @@ class PurchaseOrderController extends Controller
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, BusinessNotificationService $notifications): RedirectResponse
     {
         $data = $this->validatedOrder($request);
         $purchaseOrder = DB::transaction(function () use ($request, $data): Pembelian {
@@ -124,6 +125,14 @@ class PurchaseOrderController extends Controller
             $this->history($purchase, 'DIBUAT', null, 'MENUNGGU_APPROVAL', 'Purchase order dibuat.', $request->user()->id);
             return $purchase;
         });
+
+        $notifications->notifyUsersWithPermission(
+            'edit_purchases',
+            $request->user(),
+            'Purchase order menunggu persetujuan',
+            "PO {$purchaseOrder->no_invoice} menunggu persetujuan.",
+            route('purchase-orders.show', $purchaseOrder, false),
+        );
 
         return redirect()->route('purchase-orders.show', $purchaseOrder)->with('status', 'Purchase order dibuat. Stok belum berubah sampai barang diterima.');
     }
@@ -225,7 +234,7 @@ class PurchaseOrderController extends Controller
         return redirect()->route('purchase-orders.show', $purchaseOrder)->with('status', 'Purchase order berhasil diperbarui.');
     }
 
-    public function approve(Request $request, Pembelian $purchaseOrder): RedirectResponse
+    public function approve(Request $request, Pembelian $purchaseOrder, BusinessNotificationService $notifications): RedirectResponse
     {
         $this->assertPurchase($purchaseOrder);
         DB::transaction(function () use ($request, $purchaseOrder): void {
@@ -235,10 +244,18 @@ class PurchaseOrderController extends Controller
             $this->history($locked, 'DISETUJUI', 'MENUNGGU_APPROVAL', 'DISETUJUI', 'PO disetujui.', $request->user()->id);
         });
 
+        $notifications->notifyUsers(
+            [$purchaseOrder->user],
+            $request->user(),
+            'Purchase order disetujui',
+            "PO {$purchaseOrder->no_invoice} telah disetujui dan siap diproses.",
+            route('purchase-orders.show', $purchaseOrder, false),
+        );
+
         return back()->with('status', 'Purchase order disetujui dan siap diproses/diterima.');
     }
 
-    public function startProcessing(Request $request, Pembelian $purchaseOrder): RedirectResponse
+    public function startProcessing(Request $request, Pembelian $purchaseOrder, BusinessNotificationService $notifications): RedirectResponse
     {
         $this->assertPurchase($purchaseOrder);
         DB::transaction(function () use ($request, $purchaseOrder): void {
@@ -248,10 +265,18 @@ class PurchaseOrderController extends Controller
             $this->history($locked, 'MULAI_DIPROSES', 'DISETUJUI', 'DALAM_PROSES', 'PO mulai diproses ke supplier.', $request->user()->id);
         });
 
+        $notifications->notifyUsers(
+            [$purchaseOrder->user],
+            $request->user(),
+            'Purchase order diproses',
+            "PO {$purchaseOrder->no_invoice} mulai diproses ke supplier.",
+            route('purchase-orders.show', $purchaseOrder, false),
+        );
+
         return back()->with('status', 'Purchase order mulai diproses.');
     }
 
-    public function cancel(Request $request, Pembelian $purchaseOrder): RedirectResponse
+    public function cancel(Request $request, Pembelian $purchaseOrder, BusinessNotificationService $notifications): RedirectResponse
     {
         $this->assertPurchase($purchaseOrder);
         DB::transaction(function () use ($request, $purchaseOrder): void {
@@ -264,6 +289,14 @@ class PurchaseOrderController extends Controller
             $this->history($locked, 'DIBATALKAN', $before, 'BATAL', 'Purchase order dibatalkan.', $request->user()->id);
         });
 
+        $notifications->notifyUsers(
+            [$purchaseOrder->user],
+            $request->user(),
+            'Purchase order dibatalkan',
+            "PO {$purchaseOrder->no_invoice} telah dibatalkan.",
+            route('purchase-orders.show', $purchaseOrder, false),
+        );
+
         return redirect()->route('purchase-orders.show', $purchaseOrder)->with('status', 'Purchase order dibatalkan.');
     }
 
@@ -275,7 +308,7 @@ class PurchaseOrderController extends Controller
         return view('purchase-orders.receiving', compact('purchaseOrder'));
     }
 
-    public function storeReceiving(Request $request, Pembelian $purchaseOrder, StockService $stock): RedirectResponse
+    public function storeReceiving(Request $request, Pembelian $purchaseOrder, StockService $stock, BusinessNotificationService $notifications): RedirectResponse
     {
         $this->assertPurchase($purchaseOrder);
         $data = $request->validate([
@@ -349,6 +382,14 @@ class PurchaseOrderController extends Controller
             $summary = implode(', ', $receivedLabels);
             $this->history($locked, 'PENERIMAAN', $before, $after, $receipt->nomor_penerimaan.': '.$summary, $request->user()->id);
         });
+
+        $notifications->notifyUsers(
+            [$purchaseOrder->user],
+            $request->user(),
+            'Penerimaan purchase order tercatat',
+            "Penerimaan barang untuk PO {$purchaseOrder->no_invoice} telah dicatat.",
+            route('purchase-orders.show', $purchaseOrder, false),
+        );
 
         return redirect()->route('purchase-orders.show', $purchaseOrder)->with('status', 'Penerimaan tersimpan, stok dan mutasi stok berhasil diperbarui.');
     }

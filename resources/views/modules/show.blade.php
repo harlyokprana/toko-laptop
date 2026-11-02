@@ -14,6 +14,9 @@
             @if ($module === 'income' && auth()->user()->hasPermission('create_income'))
                 <a href="{{ route('income.create') }}" class="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white">Setor Pendapatan</a>
             @endif
+            @if ($module === 'users' && auth()->user()->hasPermission('manage_users'))
+                <a href="{{ route('users.create') }}" class="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white">Tambah Pengguna</a>
+            @endif
         </div>
     </div>
 
@@ -55,6 +58,8 @@
                                         <td class="max-w-sm px-5 py-4 text-slate-700 {{ in_array($key, ['invoice', 'nomor', 'kode', 'tanggal', 'masuk', 'waktu'], true) ? 'whitespace-nowrap' : '' }}">
                                             @if ($module === 'sales' && $key === 'invoice')
                                                 <a href="{{ route('sales.show', $row['id']) }}" class="font-semibold text-blue-700 hover:underline">{{ $row[$key] }}</a>
+                                            @elseif ($module === 'service-progress' && $key === 'service')
+                                                <a href="{{ route('service.show', $row['id']) }}" class="font-semibold text-blue-700 hover:underline">{{ $row[$key] }}</a>
                                             @else
                                                 {{ $row[$key] ?? '—' }}
                                             @endif

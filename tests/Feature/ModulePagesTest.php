@@ -2,8 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\Pelanggan;
 use App\Models\Permission;
 use App\Models\Role;
+use App\Models\Service;
+use App\Models\ServiceProgress;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -50,5 +53,49 @@ class ModulePagesTest extends TestCase
             ->assertOk()
             ->assertSee('id="theme-toggle"', false)
             ->assertSee("localStorage.getItem('app-theme')", false);
+    }
+
+    public function test_service_progress_list_shows_one_link_per_service_and_opens_its_history(): void
+    {
+        $role = Role::create(['name' => 'PROGRESS_TEST']);
+        foreach (['view_service', 'update_service_progress'] as $permission) {
+            $role->permissions()->attach(Permission::create(['name' => $permission]));
+        }
+        $user = User::factory()->create(['role_id' => $role->id]);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'PLG-PROGRESS',
+            'nama' => 'Pelanggan Progress',
+            'status' => 'AKTIF',
+        ]);
+        $service = Service::create([
+            'no_service' => 'SRV-GROUPING',
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'merek' => 'Lenovo',
+            'model' => 'ThinkPad',
+            'keluhan' => 'Tidak menyala',
+            'status' => 'TESTING',
+        ]);
+        foreach ([['DALAM_PERBAIKAN', 60], ['TESTING', 80]] as [$status, $percent]) {
+            ServiceProgress::create([
+                'service_id' => $service->id,
+                'status' => $status,
+                'progress_percent' => $percent,
+                'catatan' => 'Pembaruan '.$percent,
+                'updated_by' => $user->id,
+                'created_at' => now()->addSeconds($percent),
+            ]);
+        }
+
+        $response = $this->actingAs($user)->get(route('module.service-progress'))
+            ->assertOk()
+            ->assertSee(route('service.show', $service), false)
+            ->assertSee('80%')
+            ->assertSee('TESTING')
+            ->assertDontSee('Pembaruan 60')
+            ->assertDontSee('Pembaruan 80');
+
+        $this->assertSame(1, substr_count($response->getContent(), 'SRV-GROUPING'));
     }
 }

@@ -8,6 +8,7 @@ use App\Http\Controllers\GlobalSearchController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\LaptopController;
 use App\Http\Controllers\ModuleController;
+use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\PelangganController;
 use App\Http\Controllers\ProdukController;
@@ -20,6 +21,7 @@ use App\Http\Controllers\SalesController;
 use App\Http\Controllers\ServiceController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\SupplierController;
+use App\Http\Controllers\UserManagementController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -27,6 +29,9 @@ Route::get('/', function () {
 });
 
 Route::middleware('auth')->group(function () {
+    Route::get('/notifications', [NotificationController::class, 'index'])->name('notifications.index');
+    Route::get('/notifications/{notification}/open', [NotificationController::class, 'open'])->name('notifications.open');
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead'])->name('notifications.read-all');
     Route::get('/search', GlobalSearchController::class)->name('global-search');
     Route::get('/dashboard', DashboardController::class)
         ->middleware('permission:view_dashboard')
@@ -47,6 +52,8 @@ Route::middleware('auth')->group(function () {
         ->middleware('permission:delete_products')->name('products.destroy');
     Route::post('/customers/quick', [PelangganController::class, 'quickStore'])
         ->middleware('permission:create_sales')->name('customers.quick-store');
+    Route::post('/service/customers/quick', [PelangganController::class, 'quickStore'])
+        ->middleware('permission:create_service')->name('service.customers.quick-store');
 
     Route::get('/laptops', [LaptopController::class, 'index'])
         ->middleware('permission:view_stock')->name('laptops.index');
@@ -142,10 +149,15 @@ Route::middleware('auth')->group(function () {
         ->middleware('permission:create_service')->name('service.store');
     Route::post('/service/{service}/progress', [ServiceController::class, 'updateProgress'])
         ->whereNumber('service')->middleware('permission:update_service_progress')->name('service.progress.store');
+    Route::post('/service/{service}/handover', [ServiceController::class, 'handover'])
+        ->whereNumber('service')->middleware('permission:create_service')->name('service.handover.store');
     Route::post('/service/{service}/approvals', [ServiceController::class, 'requestApproval'])
         ->whereNumber('service')->name('service.approvals.store');
     Route::post('/service/{service}/approvals/{approval}/decision', [ServiceController::class, 'decideApproval'])
         ->whereNumber('service')->whereNumber('approval')->name('service.approvals.decision');
+    Route::get('/service/{service}/print/{document}', [ServiceController::class, 'printDocument'])
+        ->whereNumber('service')->whereIn('document', ['intake', 'final'])
+        ->middleware('permission:view_service')->name('service.print');
     Route::get('/service/{service}', [ServiceController::class, 'show'])
         ->whereNumber('service')->middleware('permission:view_service')->name('service.show');
     Route::post('/service/{service}/payments', [ServiceController::class, 'collectPayment'])
@@ -179,7 +191,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/reports', [ReportController::class, 'index'])
         ->middleware('permission:view_reports')->name('module.reports');
     Route::get('/reports/{report}', [ReportController::class, 'show'])
-        ->where('report', '[a-z-]+')->name('reports.show');
+        ->where('report', '[a-z-]+')->middleware('permission:view_reports')->name('reports.show');
     Route::get('/profit-loss', [ReportController::class, 'profitLoss'])
         ->middleware('permission:view_profit_loss')->name('module.profit-loss');
 
@@ -215,6 +227,11 @@ Route::middleware('auth')->group(function () {
         ->middleware('permission:manage_roles')->name('roles.permissions.edit');
     Route::put('/roles/{role}/permissions', [RolePermissionController::class, 'updatePermissions'])
         ->middleware('permission:manage_roles')->name('roles.permissions.update');
+
+    Route::get('/users/create', [UserManagementController::class, 'create'])
+        ->middleware('permission:manage_users')->name('users.create');
+    Route::post('/users', [UserManagementController::class, 'store'])
+        ->middleware('permission:manage_users')->name('users.store');
 
     Route::get('/cash/shifts', [CashierShiftController::class, 'index'])
         ->middleware('permission:view_cash')->name('cash.shifts.index');

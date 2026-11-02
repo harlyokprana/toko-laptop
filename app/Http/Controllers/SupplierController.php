@@ -7,6 +7,7 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class SupplierController extends Controller
 {
@@ -34,11 +35,17 @@ class SupplierController extends Controller
 
     public function create(): View
     {
-        return view('master-data.suppliers.form', ['supplier' => new Supplier(['status' => 'AKTIF'])]);
+        return view('master-data.suppliers.form', [
+            'supplier' => new Supplier(['status' => 'AKTIF', 'kode_supplier' => Supplier::nextCode()]),
+        ]);
     }
 
     public function store(Request $request): RedirectResponse
     {
+        if (Supplier::query()->count() >= 50) {
+            return back()->withErrors(['kode_supplier' => 'Jumlah supplier sudah mencapai batas maksimal 50.'])->withInput();
+        }
+
         $supplier = Supplier::create($this->validatedData($request));
 
         return redirect()->route('suppliers.show', $supplier)->with('status', 'Supplier berhasil ditambahkan.');
@@ -66,14 +73,32 @@ class SupplierController extends Controller
     /** @return array<string, mixed> */
     private function validatedData(Request $request, ?Supplier $supplier = null): array
     {
-        return $request->validate([
-            'kode_supplier' => ['required', 'string', 'max:30', Rule::unique('supplier', 'kode_supplier')->ignore($supplier)],
+        $rules = [
             'nama' => ['required', 'string', 'max:255'],
             'kontak' => ['nullable', 'string', 'max:255'],
             'telepon' => ['nullable', 'string', 'max:30'],
             'email' => ['nullable', 'email', 'max:255'],
             'alamat' => ['nullable', 'string', 'max:5000'],
             'status' => ['required', Rule::in(['AKTIF', 'NONAKTIF'])],
-        ]);
+        ];
+
+        if ($supplier) {
+            $rules['kode_supplier'] = ['required', 'string', 'max:30', Rule::unique('supplier', 'kode_supplier')->ignore($supplier)];
+        }
+
+        $data = $request->validate($rules);
+
+        if (! $supplier) {
+            $code = Supplier::nextCode();
+            if ($code === null) {
+                throw ValidationException::withMessages([
+                    'kode_supplier' => 'Jumlah supplier sudah mencapai batas maksimal 50.',
+                ]);
+            }
+
+            $data['kode_supplier'] = $code;
+        }
+
+        return $data;
     }
 }

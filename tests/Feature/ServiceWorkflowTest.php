@@ -3,8 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\Kategori;
-use App\Models\Permission;
 use App\Models\Pelanggan;
+use App\Models\Permission;
 use App\Models\Produk;
 use App\Models\Role;
 use App\Models\Service;
@@ -83,6 +83,93 @@ class ServiceWorkflowTest extends TestCase
         ]);
         $this->assertDatabaseHas('produk', ['id' => $product->id, 'stok' => 0]);
         $this->assertDatabaseCount('stok_mutasi', 0);
+    }
+
+    public function test_service_status_cannot_skip_required_workflow_stages(): void
+    {
+        $technician = $this->userWithPermissions(['update_service_progress', 'view_service']);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'PLG-'.uniqid(),
+            'nama' => 'Pelanggan Tes',
+            'status' => 'AKTIF',
+        ]);
+        $service = Service::create([
+            'no_service' => 'SRV-'.uniqid(),
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'teknisi_id' => $technician->id,
+            'status' => 'DITERIMA',
+        ]);
+
+        $this->actingAs($technician)
+            ->from(route('service.show', $service))
+            ->post(route('service.progress.store', $service), [
+                'status' => 'SELESAI',
+                'catatan' => 'Lewati proses diagnosis dan testing',
+            ])
+            ->assertSessionHasErrors('status');
+
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'DITERIMA']);
+        $this->assertDatabaseCount('service_progress', 0);
+    }
+
+    public function test_service_must_have_a_diagnosis_before_estimate_can_be_requested(): void
+    {
+        $cashier = $this->userWithPermissions(['create_service']);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'PLG-'.uniqid(),
+            'nama' => 'Pelanggan Tes',
+            'status' => 'AKTIF',
+        ]);
+        $service = Service::create([
+            'no_service' => 'SRV-'.uniqid(),
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'status' => 'DIAGNOSA',
+        ]);
+
+        $this->actingAs($cashier)->post(route('service.approvals.store', $service), [
+            'jasa' => 50000,
+            'diskon_tipe' => 'NOMINAL',
+            'catatan' => 'Menunggu pemeriksaan teknisi.',
+        ])->assertForbidden();
+
+        $this->assertDatabaseCount('service_approvals', 0);
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'DIAGNOSA']);
+    }
+
+    public function test_technician_must_record_diagnosis_before_advancing_service(): void
+    {
+        $technician = $this->userWithPermissions(['update_service_progress', 'view_service']);
+        $customer = Pelanggan::create([
+            'kode_pelanggan' => 'PLG-'.uniqid(),
+            'nama' => 'Pelanggan Tes',
+            'status' => 'AKTIF',
+        ]);
+        $service = Service::create([
+            'no_service' => 'SRV-'.uniqid(),
+            'pelanggan_id' => $customer->id,
+            'tanggal_masuk' => now(),
+            'jenis_perangkat' => 'Laptop',
+            'keluhan' => 'Tidak menyala',
+            'teknisi_id' => $technician->id,
+            'status' => 'DITERIMA',
+        ]);
+
+        $this->actingAs($technician)
+            ->from(route('service.show', $service))
+            ->post(route('service.progress.store', $service), [
+                'status' => 'DIAGNOSA',
+                'catatan' => 'Pemeriksaan belum dicatat.',
+            ])
+            ->assertSessionHasErrors('diagnosa');
+
+        $this->assertDatabaseHas('service', ['id' => $service->id, 'status' => 'DITERIMA']);
+        $this->assertDatabaseCount('service_progress', 0);
     }
 
     private function userWithPermissions(array $permissions): User
